@@ -195,34 +195,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setLoadingAuth(true);
       try {
         console.log('DEBUG Homeflow - Starting initializeAuth...');
-        const { data: { session } } = await supabase.auth.getSession();
+        
+        // Timeout de 6 segundos para obtener la sesión inicial
+        const authTimeout = new Promise<any>((_, reject) =>
+          setTimeout(() => reject(new Error('Tiempo de espera agotado al verificar la sesión inicial')), 6000)
+        );
+        
+        const sessionPromise = supabase.auth.getSession();
+        const raceResult = await Promise.race([sessionPromise, authTimeout]);
+        const session = raceResult?.data?.session || raceResult?.session || null;
         
         if (session) {
           console.log('DEBUG Homeflow - Initial session found:', session.user.email);
           setUser(session.user);
           
-          // Cargar perfil
-          try {
-            const { data: prof, error } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('id', session.user.id)
-              .single();
-            
-            if (!error && prof) {
-              setProfile(prof);
-            } else {
-              const displayName = session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'Usuario';
-              const { data: newProf } = await supabase
+          // Cargar perfil en segundo plano (sin bloquear el arranque de la app)
+          (async () => {
+            try {
+              const { data: prof, error } = await supabase
                 .from('profiles')
-                .upsert({ id: session.user.id, display_name: displayName })
-                .select()
+                .select('*')
+                .eq('id', session.user.id)
                 .single();
-              if (newProf) setProfile(newProf);
+              
+              if (!error && prof) {
+                setProfile(prof);
+              } else {
+                const displayName = session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'Usuario';
+                const { data: newProf } = await supabase
+                  .from('profiles')
+                  .upsert({ id: session.user.id, display_name: displayName })
+                  .select()
+                  .single();
+                if (newProf) setProfile(newProf);
+              }
+            } catch (pe) {
+              console.error('Error loading profile on startup in background', pe);
             }
-          } catch (pe) {
-            console.error('Error loading profile on startup', pe);
-          }
+          })();
           
           // Cargar hogares de inmediato antes de desactivar loadingAuth
           await loadHouseholds(session.user.id);
@@ -233,6 +243,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e) {
         console.error('Error during initial auth check:', e);
+        setUser(null);
+        setProfile(null);
       } finally {
         setLoadingAuth(false);
       }
@@ -252,26 +264,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setLoadingHouseholds(true);
         }
         
-        try {
-          const { data: prof } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .single();
-          if (prof) {
-            setProfile(prof);
-          } else {
-            const displayName = session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'Usuario';
-            const { data: newProf } = await supabase
+        // Cargar perfil en segundo plano (sin bloquear la carga de hogares)
+        (async () => {
+          try {
+            const { data: prof, error } = await supabase
               .from('profiles')
-              .upsert({ id: session.user.id, display_name: displayName })
-              .select()
+              .select('*')
+              .eq('id', session.user.id)
               .single();
-            if (newProf) setProfile(newProf);
+            if (!error && prof) {
+              setProfile(prof);
+            } else {
+              const displayName = session.user.user_metadata?.display_name || session.user.email?.split('@')[0] || 'Usuario';
+              const { data: newProf } = await supabase
+                .from('profiles')
+                .upsert({ id: session.user.id, display_name: displayName })
+                .select()
+                .single();
+              if (newProf) setProfile(newProf);
+            }
+          } catch (pe) {
+            console.error('Error loading profile in SIGNED_IN event in background', pe);
           }
-        } catch (pe) {
-          console.error('Error loading profile in SIGNED_IN event', pe);
-        }
+        })();
         
         await loadHouseholds(session.user.id);
       } else if (event === 'SIGNED_OUT') {
