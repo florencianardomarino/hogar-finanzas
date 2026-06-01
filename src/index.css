@@ -1,0 +1,167 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: #f8fafc;        /* Fondo claro elegante (Slate 50) */
+    --panel: #ffffff;             /* Fondo de tarjetas puro */
+    --border: #cbd5e1;            /* Bordes altamente visibles (Slate 300) */
+    --text: #0f172a;              /* Texto principal profundo para máxima legibilidad (Slate 900) */
+    --muted: #475569;             /* Texto secundario de alto contraste (Slate 600) */
+    --accent: #2563eb;            /* Azul de acento accesible (Blue 600) */
+    --panel-hover: #f1f5f9;       /* Hover claro (Slate 100) */
+  }
+  
+  .dark {
+    color-scheme: dark;
+    --background: #090D16;        /* Azul noche profundo premium */
+    --panel: #131A26;             /* Tarjetas satinadas oscuras */
+    --border: #233045;            /* Bordes delgados metalizados oscuros */
+    --text: #F3F4F6;              /* Blanco puro de alto contraste */
+    --muted: #9CA3AF;             /* Gris zafiro secundario legible */
+    --accent: #3B82F6;            /* Azul eléctrico brillante */
+    --panel-hover: #1A2436;       /* Hover oscuro */
+  }
+  
+  body {
+    background-color: var(--background);
+    color: var(--text);
+    @apply font-sans antialiased transition-colors duration-200;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.03) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.02) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.01) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+}
+
+/* Scrollbars elegantes y accesibles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.2);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+  opacity: 0.8;
+}
+
+/* Estilo Glassmorphism Premium Sobrio */
+.glass-panel {
+  background-color: var(--panel);
+  border: 1px solid var(--border);
+  @apply backdrop-blur-xl transition-all duration-300;
+  box-shadow: 
+    0 10px 30px rgba(0, 0, 0, 0.02),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.dark .glass-panel {
+  box-shadow: 
+    0 20px 40px rgba(0, 0, 0, 0.45),
+    inset 0 1px 1px rgba(255, 255, 255, 0.02);
+}
+
+/* Tarjeta Premium Metálica Sobria */
+.premium-card {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--panel);
+  border: 1px solid var(--border);
+  @apply rounded-3xl transition-all duration-300;
+  box-shadow: 
+    0 20px 40px -15px rgba(0, 0, 0, 0.03),
+    0 5px 15px -5px rgba(0, 0, 0, 0.02);
+}
+
+.premium-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+}
+
+.dark .premium-card::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+}
+
+.dark .premium-card {
+  background: linear-gradient(135deg, #131A26 0%, #0B1019 100%);
+  box-shadow: 
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
+    inset 0 1px 1px rgba(255, 255, 255, 0.02);
+}
+
+/* Efectos de texto satinados y sobrios */
+.text-gradient-emerald {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .text-gradient-emerald {
+  background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.text-gradient-rose {
+  background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .text-gradient-rose {
+  background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.text-gradient-sky {
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .text-gradient-sky {
+  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Tramas de fondo discretas para la planificación */
+.planning-pattern {
+  background-image: radial-gradient(rgba(37, 99, 235, 0.08) 1px, transparent 0);
+  background-size: 10px 10px;
+}
+
+.dark .planning-pattern {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 0);
+  background-size: 10px 10px;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input, select, textarea {
+  @apply focus:outline-none focus:ring-1 focus:ring-lux-accent/50;
+}
