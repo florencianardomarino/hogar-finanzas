@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
 import { 
-  Settings, Users, Copy, Trash2, Plus, Edit3, 
+  Settings, Users, Copy, Trash2, Plus, Edit3, Edit2, 
   PiggyBank, Moon, Sun, CreditCard, Landmark, Coins, Wallet
 } from 'lucide-react';
+import { Panel } from '../ui/Panel';
 
 export const SettingsScreen: React.FC = () => {
   const {
@@ -54,6 +55,12 @@ export const SettingsScreen: React.FC = () => {
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountType, setNewAccountType] = useState<'bank_account' | 'credit_card' | 'debit_card' | 'cash' | 'other'>('bank_account');
   const [newAccountHolder, setNewAccountHolder] = useState(currentHolders[0] || 'Compartido');
+
+  // Estados para edición de cuenta
+  const [editingAccount, setEditingAccount] = useState<any | null>(null);
+  const [editAccountName, setEditAccountName] = useState('');
+  const [editAccountType, setEditAccountType] = useState<'bank_account' | 'credit_card' | 'debit_card' | 'cash' | 'other'>('bank_account');
+  const [editAccountHolder, setEditAccountHolder] = useState('');
 
   // Sincronizar titular por defecto al cambiar el hogar activo
   useEffect(() => {
@@ -199,6 +206,52 @@ export const SettingsScreen: React.FC = () => {
   // -------------------------------------------------------------------
   // ACCIONES DINÁMICAS: GESTIÓN DE CUENTAS / TARJETAS
   // -------------------------------------------------------------------
+  const handleOpenEditAccount = (acc: any) => {
+    setEditingAccount(acc);
+    setEditAccountName(acc.name || '');
+    setEditAccountType(acc.type || 'bank_account');
+    setEditAccountHolder(acc.holder || currentHolders[0] || 'Compartido');
+  };
+
+  const handleUpdateAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editAccountName.trim() || !activeHousehold || !editingAccount) return;
+
+    if (userRole !== 'admin') {
+      showToast('Sólo el Administrador puede gestionar las cuentas del hogar', 'error');
+      return;
+    }
+
+    const name = editAccountName.trim();
+    if (currentAccounts.some((acc) => acc.id !== editingAccount.id && acc.name && typeof acc.name === 'string' && acc.name.toLowerCase() === name.toLowerCase() && acc.holder === editAccountHolder)) {
+      showToast('Este titular ya tiene otra cuenta o tarjeta registrada con ese nombre', 'error');
+      return;
+    }
+
+    const updatedAccounts = currentAccounts.map((acc) => {
+      if (acc.id === editingAccount.id) {
+        return {
+          ...acc,
+          name,
+          type: editAccountType,
+          holder: editAccountHolder
+        };
+      }
+      return acc;
+    });
+
+    try {
+      await updateHouseholdSettings({
+        accounts: updatedAccounts,
+        account_1_name: updatedAccounts[0]?.name || 'Cuenta Titular 1',
+        account_2_name: updatedAccounts[1]?.name || 'Cuenta Titular 2',
+        account_joint_name: updatedAccounts[2]?.name || 'Cuenta conjunta'
+      });
+      setEditingAccount(null);
+      showToast(`Cuenta/Tarjeta "${name}" actualizada con éxito`, 'success');
+    } catch (err) {}
+  };
+
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAccountName.trim() || !activeHousehold) return;
@@ -386,7 +439,7 @@ export const SettingsScreen: React.FC = () => {
   };
 
   return (
-    <div className="px-4 py-5 pb-24 animate-fade-in flex flex-col gap-6">
+    <div className="px-4 py-5 safe-bottom-padding animate-fade-in flex flex-col gap-6">
       {/* Cabecera */}
       <div>
         <h2 className="text-xl font-extrabold font-sans text-gradient-sky">Ajustes</h2>
@@ -599,13 +652,22 @@ export const SettingsScreen: React.FC = () => {
                           </div>
                         </div>
                         {isAdmin && (
-                          <button
-                            onClick={() => handleDeleteAccount(acc.id, acc.name || 'Sin nombre')}
-                            className="p-1.5 hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 rounded-full transition-colors"
-                            title="Eliminar Cuenta"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleOpenEditAccount(acc)}
+                              className="p-1.5 hover:bg-lux-accent/10 text-lux-accent hover:text-lux-accent/80 rounded-full transition-colors"
+                              title="Editar Cuenta"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteAccount(acc.id, acc.name || 'Sin nombre')}
+                              className="p-1.5 hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 rounded-full transition-colors"
+                              title="Eliminar Cuenta"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -816,6 +878,62 @@ export const SettingsScreen: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* PANEL FLOTANTE: EDITAR CUENTA / TARJETA */}
+      <Panel
+        isOpen={editingAccount !== null}
+        onClose={() => setEditingAccount(null)}
+        title="Editar Tarjeta / Cuenta"
+      >
+        <form onSubmit={handleUpdateAccount} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Nombre</label>
+            <input
+              type="text"
+              required
+              placeholder="Nombre (ej: Visa Galicia, Efectivo)"
+              value={editAccountName}
+              onChange={(e) => setEditAccountName(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Tipo de Cuenta</label>
+            <select
+              value={editAccountType}
+              onChange={(e: any) => setEditAccountType(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer"
+            >
+              <option value="bank_account">Cuenta Bancaria</option>
+              <option value="credit_card">Tarjeta de Crédito</option>
+              <option value="debit_card">Tarjeta de Débito</option>
+              <option value="cash">Efectivo</option>
+              <option value="other">Otro</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Asociar a (Titular)</label>
+            <select
+              value={editAccountHolder}
+              onChange={(e) => setEditAccountHolder(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer"
+            >
+              {currentHolders.map((h) => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="submit"
+            className="w-full bg-gradient-to-r from-lux-accent to-blue-600 hover:from-blue-600 hover:to-indigo-600 text-white font-semibold py-3.5 rounded-2xl shadow-lg transition-all active:scale-[0.98] mt-3"
+          >
+            Guardar Cambios
+          </button>
+        </form>
+      </Panel>
     </div>
   );
 };

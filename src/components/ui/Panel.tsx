@@ -28,7 +28,7 @@ export const Panel: React.FC<PanelProps> = ({ isOpen, onClose, title, children }
   if (!shouldRender) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex md:justify-end items-end md:items-stretch">
+    <div className="fixed inset-0 z-[100] flex md:justify-end items-end md:items-stretch">
       {/* Fondo desenfocado */}
       <div 
         className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${
@@ -62,7 +62,7 @@ export const Panel: React.FC<PanelProps> = ({ isOpen, onClose, title, children }
         </div>
 
         {/* Contenido con scroll independiente */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="flex-1 overflow-y-auto px-6 pt-4 pb-48 md:pb-6">
           {children}
         </div>
       </div>

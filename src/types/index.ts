@@ -62,6 +62,7 @@ export interface Income {
   account: string;
   category: IncomeCategory | null;
   is_estimated: boolean;
+  is_recurring?: boolean;
   created_by: string | null;
   created_at: string;
   profiles?: Profile;
@@ -80,12 +81,15 @@ export interface Expense {
   notes: string | null;
   is_recurring?: boolean;
   created_by: string | null;
-  installment_id: string | null;
-  installment_number: number | null;
-  adjustment_note: string | null;
+  installment_id?: string | null;
+  installment_number?: number | null;
+  adjustment_note?: string | null;
   created_at: string;
   expense_categories?: ExpenseCategory;
   profiles?: Profile;
+  is_reconciled?: boolean;
+  has_explicit_debited?: boolean;
+  has_explicit_pending?: boolean;
 }
 
 export interface Installment {
@@ -97,6 +101,7 @@ export interface Installment {
   amount_per_installment: number;
   payment_type: PaymentType;
   account: string;
+  first_debit_day?: number;
   first_debit_month: number;
   first_debit_year: number;
   notes: string | null;

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { Dashboard } from './components/dashboard/Dashboard';
@@ -10,9 +10,10 @@ import { MonthlySummaryScreen } from './components/summary/MonthlySummaryScreen'
 import { SettingsScreen } from './components/settings/SettingsScreen';
 import { ToastContainer } from './components/ui/ToastContainer';
 import { HomeflowLogo } from './components/ui/HomeflowLogo';
+import { getPeriodList, getPeriodLabel, arePeriodsEqual, FinancialPeriod } from './utils/dateUtils';
 import { 
   Sparkles, PiggyBank, ArrowUpRight, ArrowDownRight, 
-  CreditCard, CalendarRange, PieChart, Settings, LogOut, ChevronDown, Landmark, AlertTriangle
+  CreditCard, CalendarRange, PieChart, Settings, LogOut, ChevronDown, Landmark, AlertTriangle, Calendar
 } from 'lucide-react';
 
 type Tab = 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | 'summary' | 'settings';
@@ -20,13 +21,27 @@ type Tab = 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | '
 const AppContent: React.FC = () => {
   const { 
     user, households, loadingAuth, loadingHouseholds, householdsError, 
-    logout, selectHousehold, activeHousehold, theme, toggleTheme, loadHouseholds
+    logout, selectHousehold, activeHousehold, theme, toggleTheme, loadHouseholds,
+    currentPeriod, selectedPeriod, setSelectedPeriod, activeMonthRecord
   } = useApp();
 
   console.log('DEBUG Homeflow - loadingAuth:', loadingAuth, 'loadingHouseholds:', loadingHouseholds, 'user:', user ? user.email : 'null', 'households:', households.length);
 
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [showHouseholdDropdown, setShowHouseholdDropdown] = useState(false);
+
+  const navMonths = getPeriodList(currentPeriod || { year: new Date().getFullYear(), month: new Date().getMonth() + 1 }, 6, 6);
+  const activePeriodRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (activePeriodRef.current) {
+      activePeriodRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'center'
+      });
+    }
+  }, [selectedPeriod]);
 
   // 1. Mostrar pantalla de carga durante la verificación de Auth o de Hogares
   if (loadingAuth || loadingHouseholds) {
@@ -42,8 +57,8 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 2. Si hay un error al conectar con la base de datos de hogares, mostrar pantalla de reintento
-  if (householdsError) {
+  // 2. Si hay un error al conectar con la base de datos de hogares y no tenemos datos locales previos, mostrar pantalla de reintento
+  if (householdsError && households.length === 0) {
     return (
       <div className="min-h-screen flex flex-col justify-center items-center bg-[#090D16] px-6 text-center">
         <div className="w-16 h-16 bg-brand-rose/10 border border-brand-rose/20 text-brand-rose rounded-2xl flex items-center justify-center mb-4">
@@ -86,7 +101,7 @@ const AppContent: React.FC = () => {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <Dashboard />;
+        return <Dashboard onNavigate={(tab) => setActiveTab(tab)} />;
       case 'incomes':
         return <IncomesScreen />;
       case 'expenses':
@@ -94,7 +109,7 @@ const AppContent: React.FC = () => {
       case 'installments':
         return <InstallmentsScreen />;
       case 'savings':
-        return <SavingsScreen />;
+        return <SavingsScreen onNavigate={(tab) => setActiveTab(tab)} />;
       case 'summary':
         return <MonthlySummaryScreen />;
       case 'settings':
@@ -202,7 +217,7 @@ const AppContent: React.FC = () => {
       <main className="flex-1 min-h-screen flex flex-col relative z-0">
         
         {/* Cabecera Móvil Premium de Marca permanente */}
-        <div className="md:hidden flex justify-between items-center px-4 py-3 border-b border-lux-border/10 bg-lux-bg/50 backdrop-blur-md select-none sticky top-0 z-30">
+        <div className="md:hidden flex justify-between items-center px-4 pb-3 safe-header-padding border-b border-lux-border/10 bg-lux-bg/50 backdrop-blur-md select-none sticky top-0 z-30">
           {/* Logo y Nombre de Marca */}
           <div className="flex items-center gap-2">
             <HomeflowLogo size={26} />
@@ -248,6 +263,41 @@ const AppContent: React.FC = () => {
           </div>
         </div>
 
+        {/* --- Selector de Período Global --- */}
+        {activeTab !== 'settings' && (
+          <div className="flex gap-2 overflow-x-auto py-3 px-4 scrollbar-none border-b border-lux-border/10 select-none bg-lux-bg/40 backdrop-blur-md scroll-smooth sticky top-[51px] md:top-0 z-20">
+            {navMonths.map((p: FinancialPeriod, idx: number) => {
+              const isSelected = arePeriodsEqual(p, selectedPeriod);
+              const isCurrent = arePeriodsEqual(p, currentPeriod);
+              const isFuture = p.year > currentPeriod.year || (p.year === currentPeriod.year && p.month > currentPeriod.month);
+
+              return (
+                <button
+                  key={idx}
+                  ref={isSelected ? activePeriodRef : null}
+                  onClick={() => setSelectedPeriod(p)}
+                  className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-2xl border text-xs font-bold transition-all duration-200 cursor-pointer ${
+                    isSelected
+                      ? 'border-lux-accent bg-lux-accent/15 text-lux-accent shadow-md shadow-lux-accent/5'
+                      : 'border-lux-border/40 bg-lux-panel/30 text-lux-muted hover:border-lux-border/60 hover:bg-lux-panel/50 hover:text-lux-text'
+                  }`}
+                >
+                  <Calendar size={12} className={isSelected ? 'text-lux-accent' : 'text-lux-muted'} />
+                  <span>{getPeriodLabel(p.year, p.month)}</span>
+                  {isCurrent && (
+                    <span className="w-1.5 h-1.5 bg-brand-emerald rounded-full" title="Mes en curso" />
+                  )}
+                  {isFuture && (
+                    <span className="text-[9px] font-bold text-brand-indigo bg-brand-indigo/15 border border-brand-indigo/30 px-1 rounded">
+                      P
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Sección del Módulo activo */}
         <div className="flex-1">
           {renderTabContent()}
@@ -256,7 +306,7 @@ const AppContent: React.FC = () => {
         {/* -----------------------------------------------------------------
             C. NAV BAR INFERIOR DE MÓVIL - ULTRA PREMIUM FLOATING GLASS
             ----------------------------------------------------------------- */}
-        <div className="md:hidden fixed bottom-4 left-4 right-4 z-40 bg-lux-panel/95 backdrop-blur-xl border border-lux-border/40 rounded-3xl shadow-2xl px-2 py-2 flex justify-around select-none">
+        <div className="md:hidden fixed safe-bottom-nav left-4 right-4 z-40 bg-lux-panel/95 backdrop-blur-xl border border-lux-border/40 rounded-3xl shadow-2xl px-2 py-2 flex justify-around select-none">
           {[
             { id: 'dashboard', icon: CalendarRange, label: 'Inicio' },
             { id: 'incomes', icon: ArrowUpRight, label: 'Ingresos' },

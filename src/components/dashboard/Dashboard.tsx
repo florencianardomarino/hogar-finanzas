@@ -12,10 +12,14 @@ import {
   FileText, CreditCard, Landmark, Coins, TrendingUp, AlertTriangle, Sparkles
 } from 'lucide-react';
 
-export const Dashboard: React.FC = () => {
+interface DashboardProps {
+  onNavigate?: (tab: 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | 'summary' | 'settings') => void;
+}
+
+export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const {
     activeHousehold, userRole, currentPeriod, selectedPeriod, setSelectedPeriod,
-    monthsData, activeMonthRecord, incomes, expenses, unplannedExpenses, installments,
+    monthsData, activeMonthRecord, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, installments,
     savingsConfig, addIncome, addExpense, addInstallment, addUnplannedExpense,
     categories, closeMonth, reopenMonth, showToast
   } = useApp();
@@ -48,11 +52,16 @@ export const Dashboard: React.FC = () => {
     'Compartido'
   ];
 
-  const currentAccounts: any[] = activeHousehold?.accounts || [
+  const baseAccounts = activeHousehold?.accounts || [
     { id: '1', name: activeHousehold?.account_1_name || 'Cuenta Titular 1', type: 'bank_account', holder: activeHousehold?.holder_1_name || 'Titular 1' },
     { id: '2', name: activeHousehold?.account_2_name || 'Cuenta Titular 2', type: 'bank_account', holder: activeHousehold?.holder_2_name || 'Titular 2' },
     { id: '3', name: activeHousehold?.account_joint_name || 'Cuenta conjunta', type: 'bank_account', holder: 'Compartido' }
   ];
+
+  const currentAccounts: any[] = [...baseAccounts];
+  if (!currentAccounts.some(acc => acc.type === 'cash' || acc.name.toLowerCase() === 'efectivo')) {
+    currentAccounts.push({ id: 'cash-fallback', name: 'Efectivo', type: 'cash', holder: 'Compartido' });
+  }
 
   // Sincronizar valores iniciales de formularios dinámicamente al cambiar de hogar o de titulares
   React.useEffect(() => {
@@ -74,6 +83,7 @@ export const Dashboard: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [adjustmentNote, setAdjustmentNote] = useState('');
   const [isRecurring, setIsRecurring] = useState(false);
+  const [isIncomeRecurring, setIsIncomeRecurring] = useState(false);
 
   // Estados de formulario de Cuotas
   const [totalAmount, setTotalAmount] = useState('');
@@ -82,16 +92,13 @@ export const Dashboard: React.FC = () => {
   const [paymentType, setPaymentType] = useState<'credit_card' | 'debit'>('credit_card');
   const [firstMonth, setFirstMonth] = useState(String(currentPeriod.month));
   const [firstYear, setFirstYear] = useState(String(currentPeriod.year));
+  const [firstDay, setFirstDay] = useState('10');
 
   // -------------------------------------------------------------------
   // CÁLCULO DE DATOS FINANCIEROS ENCADENADOS
   // -------------------------------------------------------------------
   const calculatedMonths = calculateEncainedFinances(
-    monthsData,
-    // El motor de finanzas necesita todos los datos de todos los meses para encadenar
-    // pero para optimizar, usamos los locales si solo tenemos cargado el actual
-    // o el contexto se encarga de proveerlos. Inyectamos los del estado local
-    incomes, expenses, unplannedExpenses, installments, savingsConfig
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10
   );
 
   // Obtener los datos del período seleccionado actual
@@ -108,6 +115,11 @@ export const Dashboard: React.FC = () => {
     incomesList: incomes,
     unplannedList: unplannedExpenses
   };
+
+  const dashboardMonthExps = currentPeriodData.expensesList || expenses;
+  const dashboardPendingAmount = dashboardMonthExps
+    .filter((e: any) => !e.is_reconciled)
+    .reduce((acc: number, e: any) => acc + Number(e.amount), 0);
 
   // Calcular el saldo real acumulado actual
   // Es el saldo final del mes en curso real (ignorando proyecciones futuras)
@@ -165,19 +177,21 @@ export const Dashboard: React.FC = () => {
     setNotes('');
     setAdjustmentNote('');
     setIsRecurring(false);
+    setIsIncomeRecurring(false);
     setTotalAmount('');
     setNumInstallments('12');
     setInstallmentAmount('');
     setPaymentType('credit_card');
     setFirstMonth(String(currentPeriod.month));
     setFirstYear(String(currentPeriod.year));
+    setFirstDay('10');
     setPanelOpen(null);
   };
 
   const handleAddIncome = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!desc || !amount) {
-      showToast('Por favor, ingresa descripción e importe', 'error');
+    if (!desc || !amount || !category) {
+      showToast('Por favor, completa descripción, importe y categoría', 'error');
       return;
     }
     try {
@@ -187,7 +201,8 @@ export const Dashboard: React.FC = () => {
         date,
         account,
         category: (category as any) || null,
-        is_estimated: activeMonthRecord?.status === 'planning'
+        is_estimated: activeMonthRecord?.status === 'planning',
+        is_recurring: isIncomeRecurring
       });
       resetForm();
     } catch (e) {}
@@ -225,18 +240,20 @@ export const Dashboard: React.FC = () => {
 
   const handleAddInstallment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!desc || !totalAmount || !installmentAmount) {
-      showToast('Por favor, completa los importes', 'error');
+    if (!desc || !installmentAmount || !numInstallments) {
+      showToast('Por favor, completa los campos obligatorios', 'error');
       return;
     }
     try {
+      const finalTotal = parseFloat(installmentAmount) * parseInt(numInstallments);
       await addInstallment({
         description: desc,
-        total_amount: parseFloat(totalAmount),
+        total_amount: finalTotal,
         num_installments: parseInt(numInstallments),
         amount_per_installment: parseFloat(installmentAmount),
         payment_type: paymentType,
         account,
+        first_debit_day: parseInt(firstDay),
         first_debit_month: parseInt(firstMonth),
         first_debit_year: parseInt(firstYear),
         notes: notes || null
@@ -264,29 +281,33 @@ export const Dashboard: React.FC = () => {
     } catch (e) {}
   };
 
-  // Autocalcular cuota mensual al cambiar monto total o número de cuotas
-  const handleTotalAmountChange = (val: string) => {
-    setTotalAmount(val);
+  // Autocalcular el importe total al cambiar el importe por cuota o número de cuotas (priorizando la cuota individual)
+  const handleInstallmentAmountChange = (val: string) => {
+    setInstallmentAmount(val);
     if (val && numInstallments) {
-      const calculated = (parseFloat(val) / parseInt(numInstallments)).toFixed(2);
-      setInstallmentAmount(calculated);
+      const calculatedTotal = (parseFloat(val) * parseInt(numInstallments)).toFixed(2);
+      setTotalAmount(calculatedTotal);
     }
   };
 
   const handleNumInstallmentsChange = (val: string) => {
     setNumInstallments(val);
-    if (totalAmount && val) {
-      const calculated = (parseFloat(totalAmount) / parseInt(val)).toFixed(2);
-      setInstallmentAmount(calculated);
+    if (installmentAmount && val) {
+      const calculatedTotal = (parseFloat(installmentAmount) * parseInt(val)).toFixed(2);
+      setTotalAmount(calculatedTotal);
     }
   };
 
+  const handleTotalAmountChange = (val: string) => {
+    setTotalAmount(val);
+  };
+
   return (
-    <div className="pb-24">
+    <div className="safe-bottom-padding">
       {/* -----------------------------------------------------------------
           1. CABECERA Y SELECCIÓN DE HOGAR ACTIVO
           ----------------------------------------------------------------- */}
-      <div className="flex justify-between items-center px-4 pt-4 pb-2 border-b border-lux-border/20 bg-lux-bg/60 backdrop-blur-md sticky top-0 z-20">
+      <div className="flex justify-between items-center px-4 pt-4 pb-2 border-b border-lux-border/20 bg-lux-bg/60 backdrop-blur-md md:sticky md:top-0 z-20">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-lux-accent to-brand-indigo flex items-center justify-center shadow-lg shadow-lux-accent/15">
             <Sparkles size={16} className="text-white" />
@@ -323,47 +344,17 @@ export const Dashboard: React.FC = () => {
         )}
       </div>
 
-      {/* -----------------------------------------------------------------
-          2. NAVEGACIÓN TEMPORAL (SCROLL HORIZONTAL)
-          ----------------------------------------------------------------- */}
-      <div className="flex gap-2 overflow-x-auto py-3 px-4 scrollbar-none border-b border-lux-border/10 select-none bg-lux-bg/40 scroll-smooth">
-        {navMonths.map((p, idx) => {
-          const isSelected = arePeriodsEqual(p, selectedPeriod);
-          const isCurrent = arePeriodsEqual(p, currentPeriod);
-          const isFuture = p.year > currentPeriod.year || (p.year === currentPeriod.year && p.month > currentPeriod.month);
 
-          return (
-            <button
-              key={idx}
-              ref={isSelected ? activePeriodRef : null}
-              onClick={() => setSelectedPeriod(p)}
-              className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-2xl border text-xs font-bold transition-all duration-200 cursor-pointer ${
-                isSelected
-                  ? 'border-lux-accent bg-lux-accent/15 text-lux-accent shadow-md shadow-lux-accent/5'
-                  : 'border-lux-border/40 bg-lux-panel/30 text-lux-muted hover:border-lux-border/60 hover:bg-lux-panel/50 hover:text-lux-text'
-              }`}
-            >
-              <Calendar size={12} className={isSelected ? 'text-lux-accent' : 'text-lux-muted'} />
-              <span>{getPeriodLabel(p.year, p.month)}</span>
-              {isCurrent && (
-                <span className="w-1.5 h-1.5 bg-brand-emerald rounded-full" title="Mes en curso" />
-              )}
-              {isFuture && (
-                <span className="text-[9px] font-bold text-brand-indigo bg-brand-indigo/15 border border-brand-indigo/30 px-1 rounded">
-                  P
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
 
       {/* -----------------------------------------------------------------
           3. TARJETAS FINANCIERAS PRINCIPALES
           ----------------------------------------------------------------- */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 px-4 pt-5">
         {/* Tarjeta 1: Ahorro Acumulado Real (Principal) */}
-        <div className="col-span-2 glass-panel p-5 rounded-3xl premium-card flex flex-col justify-between relative overflow-hidden group">
+        <div 
+          onClick={() => onNavigate?.('savings')}
+          className="col-span-2 glass-panel p-5 rounded-3xl premium-card flex flex-col justify-between relative overflow-hidden group cursor-pointer hover:border-lux-accent/30 hover:bg-lux-panel/30 active:scale-[0.99] transition-all duration-300"
+        >
           <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:scale-110 transition-transform duration-300">
             <PiggyBank size={96} className="text-brand-emerald" />
           </div>
@@ -382,7 +373,10 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Tarjeta 2: Ahorro del Mes */}
-        <div className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40">
+        <div 
+          onClick={() => onNavigate?.('summary')}
+          className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40 cursor-pointer hover:border-lux-accent/30 hover:bg-lux-panel/30 active:scale-[0.99] transition-all duration-300"
+        >
           <div className="flex items-center gap-2 text-lux-muted">
             <Coins size={14} className={currentPeriodData.saving >= 0 ? 'text-brand-emerald' : 'text-brand-rose'} />
             <span className="text-[10px] font-bold uppercase tracking-wider">Ahorro del Mes</span>
@@ -399,7 +393,10 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Tarjeta 3: Ingresos Totales */}
-        <div className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40">
+        <div 
+          onClick={() => onNavigate?.('incomes')}
+          className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40 cursor-pointer hover:border-lux-accent/30 hover:bg-lux-panel/30 active:scale-[0.99] transition-all duration-300"
+        >
           <div className="flex items-center gap-2 text-lux-muted">
             <ArrowUpRight size={14} className="text-brand-emerald" />
             <span className="text-[10px] font-bold uppercase tracking-wider">Ingresos del Mes</span>
@@ -415,7 +412,10 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Tarjeta 4: Gastos del Mes */}
-        <div className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40">
+        <div 
+          onClick={() => onNavigate?.('expenses')}
+          className="glass-panel p-4 rounded-3xl flex flex-col justify-between border-lux-border/40 cursor-pointer hover:border-lux-accent/30 hover:bg-lux-panel/30 active:scale-[0.99] transition-all duration-300"
+        >
           <div className="flex items-center gap-2 text-lux-muted">
             <ArrowDownRight size={14} className="text-brand-rose" />
             <span className="text-[10px] font-bold uppercase tracking-wider">Gastos Corrientes</span>
@@ -424,7 +424,14 @@ export const Dashboard: React.FC = () => {
             <span className="text-xl lg:text-2xl font-extrabold font-sans text-brand-rose">
               {Number(currentPeriodData.totalExpenses).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
             </span>
-            <p className="text-[9px] text-lux-muted mt-1">Corriente + Cuotas</p>
+            <p className="text-[9px] text-lux-muted mt-1 flex justify-between items-center">
+              <span>Corriente + Cuotas</span>
+              {dashboardPendingAmount > 0 && (
+                <span className="text-amber-500 font-bold ml-1">
+                  ({dashboardPendingAmount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })} pendientes)
+                </span>
+              )}
+            </p>
           </div>
         </div>
       </div>
@@ -560,7 +567,7 @@ export const Dashboard: React.FC = () => {
           7. BOTÓN FLOTANTE RÁPIDO "+" DE ACCIÓN MULTI-PANELES (TÁCTIL Y DESKTOP)
           ----------------------------------------------------------------- */}
       {activeMonthRecord?.status !== 'closed' && (
-        <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2">
+        <div className="fixed safe-bottom-actions right-4 z-30 flex flex-col items-end gap-2">
           {/* Menú de accesos desplegables */}
           {menuOpen && (
             <div className="flex flex-col gap-2 origin-bottom transition-all duration-200 mb-2 animate-fade-in">
@@ -655,12 +662,31 @@ export const Dashboard: React.FC = () => {
             />
           </div>
 
-          <ChipsSelector
-            label="Cuenta de Destino"
-            options={accountOptions}
-            selectedValue={account}
-            onChange={setAccount}
-          />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Cuenta de Destino</label>
+            <select
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer focus:outline-none transition-all"
+            >
+              {currentHolders.map((hName) => {
+                const hAccs = currentAccounts.filter((acc) => acc.holder === hName);
+                if (hAccs.length === 0) return null;
+                return (
+                  <optgroup key={hName} label={`Cuentas de ${hName}`} className="bg-lux-panel text-lux-text">
+                    {hAccs.map((acc) => {
+                      const displayName = acc.name?.trim() || (acc.type === 'credit_card' ? 'Tarjeta de Crédito' : acc.type === 'cash' ? 'Efectivo' : 'Cuenta de Débito');
+                      return (
+                        <option key={acc.id} value={acc.name} className="bg-lux-panel text-lux-text">
+                          {displayName} {acc.type === 'credit_card' ? '💳' : acc.type === 'cash' ? '💵' : '🏦'}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
 
           <ChipsSelector
             label="Categoría"
@@ -673,6 +699,19 @@ export const Dashboard: React.FC = () => {
             selectedValue={category}
             onChange={setCategory}
           />
+
+          <label className="flex items-center gap-3 bg-lux-bg/40 border border-lux-border/50 p-4 rounded-2xl cursor-pointer hover:border-lux-accent/60 transition-colors my-1">
+            <input
+              type="checkbox"
+              checked={isIncomeRecurring}
+              onChange={(e) => setIsIncomeRecurring(e.target.checked)}
+              className="w-5 h-5 rounded-md border-lux-border bg-lux-bg text-lux-accent focus:ring-lux-accent cursor-pointer accent-lux-accent"
+            />
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-lux-text">Ingreso Recurrente</span>
+              <span className="text-[10px] text-lux-muted">Se copiará automáticamente en los meses sucesivos</span>
+            </div>
+          </label>
 
           <button
             type="submit"
@@ -733,12 +772,31 @@ export const Dashboard: React.FC = () => {
             onChange={setHolder}
           />
 
-          <ChipsSelector
-            label="Cuenta de Débito"
-            options={accountOptions}
-            selectedValue={account}
-            onChange={setAccount}
-          />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Cuenta de Débito</label>
+            <select
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer focus:outline-none transition-all"
+            >
+              {currentHolders.map((hName) => {
+                const hAccs = currentAccounts.filter((acc) => acc.holder === hName);
+                if (hAccs.length === 0) return null;
+                return (
+                  <optgroup key={hName} label={`Cuentas de ${hName}`} className="bg-lux-panel text-lux-text">
+                    {hAccs.map((acc) => {
+                      const displayName = acc.name?.trim() || (acc.type === 'credit_card' ? 'Tarjeta de Crédito' : acc.type === 'cash' ? 'Efectivo' : 'Cuenta de Débito');
+                      return (
+                        <option key={acc.id} value={acc.name} className="bg-lux-panel text-lux-text">
+                          {displayName} {acc.type === 'credit_card' ? '💳' : acc.type === 'cash' ? '💵' : '🏦'}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
 
           <ChipsSelector
             label="Categoría del Gasto"
@@ -822,14 +880,14 @@ export const Dashboard: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Importe Total (€)</label>
+              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Importe por Cuota (€)</label>
               <input
                 type="number"
                 step="0.01"
                 required
                 placeholder="0.00"
-                value={totalAmount}
-                onChange={(e) => handleTotalAmountChange(e.target.value)}
+                value={installmentAmount}
+                onChange={(e) => handleInstallmentAmountChange(e.target.value)}
                 className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text"
               />
             </div>
@@ -849,17 +907,11 @@ export const Dashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Importe por Cuota (€)</label>
-            <input
-              type="number"
-              step="0.01"
-              required
-              placeholder="0.00"
-              value={installmentAmount}
-              onChange={(e) => setInstallmentAmount(e.target.value)}
-              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text"
-            />
-            <p className="text-[10px] text-lux-muted">Calculado automáticamente. Puedes corregirlo por redondeos.</p>
+            <span className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Importe Total Proyectado</span>
+            <div className="px-4 py-3 rounded-2xl border border-lux-border/40 bg-lux-panel/30 text-lux-accent font-bold text-sm select-none">
+              € {((installmentAmount && numInstallments) ? (parseFloat(installmentAmount) * parseInt(numInstallments)).toFixed(2) : '0.00')}
+            </div>
+            <p className="text-[10px] text-lux-muted">Calculado automáticamente (Cuota × Cantidad).</p>
           </div>
 
           <ChipsSelector
@@ -872,35 +924,67 @@ export const Dashboard: React.FC = () => {
             onChange={setPaymentType}
           />
 
-          <ChipsSelector
-            label="Tarjeta / Cuenta de Débito"
-            options={accountOptions}
-            selectedValue={account}
-            onChange={setAccount}
-          />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Tarjeta / Cuenta de Débito</label>
+            <select
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer focus:outline-none transition-all"
+            >
+              {currentHolders.map((hName) => {
+                const hAccs = currentAccounts.filter((acc) => acc.holder === hName);
+                if (hAccs.length === 0) return null;
+                return (
+                  <optgroup key={hName} label={`Cuentas de ${hName}`} className="bg-lux-panel text-lux-text">
+                    {hAccs.map((acc) => {
+                      const displayName = acc.name?.trim() || (acc.type === 'credit_card' ? 'Tarjeta de Crédito' : acc.type === 'cash' ? 'Efectivo' : 'Cuenta de Débito');
+                      return (
+                        <option key={acc.id} value={acc.name} className="bg-lux-panel text-lux-text">
+                          {displayName} {acc.type === 'credit_card' ? '💳' : acc.type === 'cash' ? '💵' : '🏦'}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-2">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Mes Primer Débito</label>
+              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Día de Inicio</label>
               <select
-                value={firstMonth}
-                onChange={(e) => setFirstMonth(e.target.value)}
-                className="w-full bg-lux-bg border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text"
+                value={firstDay}
+                onChange={(e) => setFirstDay(e.target.value)}
+                className="w-full bg-lux-bg border border-lux-border/60 focus:border-lux-accent rounded-2xl px-3 py-3 text-sm text-lux-text"
               >
-                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                  <option key={m} value={m}>{getPeriodLabel(2026, m).split(' ')[0]}</option>
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                  <option key={d} value={d}>{d}</option>
                 ))}
               </select>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Año Primer Débito</label>
+              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Mes de Inicio</label>
+              <select
+                value={firstMonth}
+                onChange={(e) => setFirstMonth(e.target.value)}
+                className="w-full bg-lux-bg border border-lux-border/60 focus:border-lux-accent rounded-2xl px-3 py-3 text-sm text-lux-text"
+              >
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                  <option key={m} value={m}>{getPeriodLabel(2000, m).split(' ')[0]}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Año de Inicio</label>
               <select
                 value={firstYear}
                 onChange={(e) => setFirstYear(e.target.value)}
-                className="w-full bg-lux-bg border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text"
+                className="w-full bg-lux-bg border border-lux-border/60 focus:border-lux-accent rounded-2xl px-3 py-3 text-sm text-lux-text"
               >
-                {[2025, 2026, 2027, 2028].map((y) => (
+                {Array.from({ length: 15 }, (_, i) => currentPeriod.year - 4 + i).map((y) => (
                   <option key={y} value={y}>{y}</option>
                 ))}
               </select>
@@ -977,12 +1061,31 @@ export const Dashboard: React.FC = () => {
             onChange={setHolder}
           />
 
-          <ChipsSelector
-            label="Cuenta de Pago"
-            options={accountOptions}
-            selectedValue={account}
-            onChange={setAccount}
-          />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold text-lux-muted uppercase tracking-wider">Cuenta de Pago</label>
+            <select
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+              className="w-full bg-lux-bg/60 border border-lux-border/60 focus:border-lux-accent rounded-2xl px-4 py-3 text-sm text-lux-text cursor-pointer focus:outline-none transition-all"
+            >
+              {currentHolders.map((hName) => {
+                const hAccs = currentAccounts.filter((acc) => acc.holder === hName);
+                if (hAccs.length === 0) return null;
+                return (
+                  <optgroup key={hName} label={`Cuentas de ${hName}`} className="bg-lux-panel text-lux-text">
+                    {hAccs.map((acc) => {
+                      const displayName = acc.name?.trim() || (acc.type === 'credit_card' ? 'Tarjeta de Crédito' : acc.type === 'cash' ? 'Efectivo' : 'Cuenta de Débito');
+                      return (
+                        <option key={acc.id} value={acc.name} className="bg-lux-panel text-lux-text">
+                          {displayName} {acc.type === 'credit_card' ? '💳' : acc.type === 'cash' ? '💵' : '🏦'}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
 
           <button
             type="submit"

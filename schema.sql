@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS public.installments (
     amount_per_installment NUMERIC(12,2) NOT NULL,
     payment_type TEXT CHECK (payment_type IN ('credit_card', 'debit')) NOT NULL,
     account TEXT NOT NULL,
+    first_debit_day INTEGER DEFAULT 10 CHECK (first_debit_day BETWEEN 1 AND 31) NOT NULL,
     first_debit_month INTEGER NOT NULL CHECK (first_debit_month BETWEEN 1 AND 12),
     first_debit_year INTEGER NOT NULL,
     notes TEXT,

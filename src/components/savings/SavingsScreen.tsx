@@ -4,14 +4,18 @@ import { getPeriodLabel, arePeriodsEqual } from '../../utils/dateUtils';
 import { calculateEncainedFinances } from '../../utils/financeUtils';
 import { PiggyBank, ArrowRight, Sparkles, TrendingUp, HelpCircle, ShieldAlert } from 'lucide-react';
 
-export const SavingsScreen: React.FC = () => {
+interface SavingsScreenProps {
+  onNavigate?: (tab: 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | 'summary' | 'settings') => void;
+}
+
+export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
   const { 
-    monthsData, incomes, expenses, unplannedExpenses, installments, savingsConfig, currentPeriod
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, currentPeriod, activeHousehold, setSelectedPeriod
   } = useApp();
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, incomes, expenses, unplannedExpenses, installments, savingsConfig
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10
   );
 
   // Encontrar el saldo actual real al mes de hoy
@@ -20,21 +24,27 @@ export const SavingsScreen: React.FC = () => {
   );
   const totalRealSavings = currentMonthData ? currentMonthData.finalBalance : (savingsConfig?.initial_balance || 0);
 
-  // Separar reales de proyectados
+  // Mostrar únicamente el mes en curso en la sección de progreso real
   const realMonths = calculatedMonths.filter(
-    (c) => c.year < currentPeriod.year || (c.year === currentPeriod.year && c.month <= currentPeriod.month)
+    (c) => c.year === currentPeriod.year && c.month === currentPeriod.month
   );
 
   const projectedMonths = calculatedMonths.filter(
     (c) => c.year > currentPeriod.year || (c.year === currentPeriod.year && c.month > currentPeriod.month)
   );
 
+  const handleMonthClick = (year: number, month: number) => {
+    setSelectedPeriod({ year, month });
+    onNavigate?.('dashboard');
+  };
+
   // Renderizar un bloque mensual de 4 filas
   const renderMonthBlock = (mData: any, isProjected: boolean) => {
     return (
       <div 
         key={mData.monthId}
-        className={`glass-panel p-5 rounded-3xl border flex flex-col gap-3.5 relative overflow-hidden transition-all duration-300 hover:border-lux-border ${
+        onClick={() => handleMonthClick(mData.year, mData.month)}
+        className={`glass-panel p-5 rounded-3xl border flex flex-col gap-3.5 relative overflow-hidden transition-all duration-300 hover:border-lux-border cursor-pointer active:scale-[0.99] hover:bg-lux-panel/30 ${
           isProjected 
             ? 'planning-pattern border-brand-indigo/30 shadow-indigo-950/5' 
             : 'border-lux-border/30 hover:shadow-lg shadow-black/10'
@@ -102,7 +112,7 @@ export const SavingsScreen: React.FC = () => {
   };
 
   return (
-    <div className="px-4 py-5 pb-24 animate-fade-in">
+    <div className="px-4 py-5 safe-bottom-padding animate-fade-in">
       {/* 1. SECTOR DESTACADO INICIAL */}
       <div className="glass-panel p-6 rounded-3xl premium-card flex flex-col items-center justify-center text-center mb-8 relative overflow-hidden">
         <div className="w-14 h-14 bg-gradient-to-tr from-brand-emerald to-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-brand-emerald/20 mb-4 animate-bounce-slow">

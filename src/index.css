@@ -165,3 +165,24 @@
 input, select, textarea {
   @apply focus:outline-none focus:ring-1 focus:ring-lux-accent/50;
 }
+
+/* Soporte ultra-robusto para iOS PWA Safe Areas (Evita fallos de parsing de Tailwind) */
+.safe-header-padding {
+  padding-top: calc(14px + env(safe-area-inset-top, 0px)) !important;
+}
+
+.safe-bottom-nav {
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+.safe-bottom-actions {
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+.safe-bottom-toasts {
+  bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+.safe-bottom-padding {
+  padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+}

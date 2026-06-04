@@ -51,7 +51,9 @@ interface AppContextType {
   
   // Datos Financieros del Período
   incomes: Income[];
+  allIncomes: Income[];
   expenses: Expense[];
+  allExpenses: Expense[];
   unplannedExpenses: UnplannedExpense[];
   installments: Installment[];
   savingsConfig: SavingsConfig | null;
@@ -60,14 +62,15 @@ interface AppContextType {
   // Operaciones Financieras
   addIncome: (income: Omit<Income, 'id' | 'month_id' | 'created_by' | 'created_at'>) => Promise<void>;
   updateIncome: (id: string, income: Partial<Income>, adjustmentNote?: string) => Promise<void>;
-  deleteIncome: (id: string) => Promise<void>;
+  deleteIncome: (id: string, deleteFuture?: boolean) => Promise<void>;
   
-  addExpense: (expense: Omit<Expense, 'id' | 'month_id' | 'created_by' | 'created_at' | 'installment_id' | 'installment_number'>) => Promise<void>;
+  addExpense: (expense: Omit<Expense, 'id' | 'month_id' | 'created_by' | 'created_at'>) => Promise<void>;
   updateExpense: (id: string, expense: Partial<Expense>, adjustmentNote?: string) => Promise<void>;
-  deleteExpense: (id: string) => Promise<void>;
+  deleteExpense: (id: string, deleteFuture?: boolean) => Promise<void>;
   
   addInstallment: (installment: Omit<Installment, 'id' | 'household_id' | 'created_by' | 'created_at'>) => Promise<void>;
   cancelInstallment: (id: string) => Promise<void>;
+  updateInstallment: (id: string, installment: Partial<Installment>) => Promise<void>;
   
   addUnplannedExpense: (unplanned: Omit<UnplannedExpense, 'id' | 'household_id' | 'month_id' | 'created_by' | 'created_at'>) => Promise<void>;
   deleteUnplannedExpense: (id: string) => Promise<void>;
@@ -119,7 +122,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Datos financieros del período activo
   const [incomes, setIncomes] = useState<Income[]>([]);
+  const [allIncomes, setAllIncomes] = useState<Income[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
   const [unplannedExpenses, setUnplannedExpenses] = useState<UnplannedExpense[]>([]);
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [savingsConfig, setSavingsConfig] = useState<SavingsConfig | null>(null);
@@ -256,7 +261,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('DEBUG Homeflow - AuthStateChange Event:', event, 'Session:', session ? 'Active' : 'Null');
       
-      if (event === 'SIGNED_IN' && session) {
+      if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session) {
         setUser(session.user);
         
         // Evitamos doble pantalla de carga innecesaria si ya tenemos hogares
@@ -414,8 +419,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e: any) {
         console.error('Error loading households:', e);
-        setHouseholdsError(e.message || 'Error al conectar con la base de datos');
-        showToast('Error al cargar hogares', 'error');
+        // Solo bloquear la pantalla si no tenemos ningún dato cargado aún
+        if (!householdsLoadedRef.current || households.length === 0) {
+          setHouseholdsError(e.message || 'Error al conectar con la base de datos');
+          showToast('Error al cargar hogares', 'error');
+        } else {
+          // Si ya estábamos adentro, mostrar un toast sutil e informativo y no bloquear la pantalla
+          showToast('Conexión inestable. Usando datos locales.', 'info');
+        }
       } finally {
         setLoadingHouseholds(false);
         activeLoadPromiseRef.current = null; // Liberamos la referencia al finalizar
@@ -665,9 +676,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         
         if (!createError && newMonth) {
           record = newMonth;
-          setMonthsData((prev) => [...prev, newMonth].sort((a,b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+          setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
           
-          // --- NUEVO: Copiar gastos recurrentes del mes anterior ---
+          // --- NUEVO: Copiar gastos e ingresos recurrentes del mes anterior ---
           try {
             let prevMonthVal = selectedPeriod.month - 1;
             let prevYearVal = selectedPeriod.year;
@@ -685,19 +696,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               .maybeSingle();
 
             if (prevMonthRecord) {
+              // 1. Copiar gastos recurrentes
               const { data: recurringExpenses } = await supabase
                 .from('expenses')
                 .select('*')
                 .eq('month_id', prevMonthRecord.id)
                 .eq('is_recurring', true);
 
-              if (recurringExpenses && recurringExpenses.length > 0) {
+               if (recurringExpenses && recurringExpenses.length > 0) {
+                const startDay = activeHousehold.billing_cycle_start_day;
                 const copies = recurringExpenses.map(exp => {
                   const prevDate = new Date(exp.date);
                   const day = prevDate.getUTCDate();
-                  const lastDayOfTargetMonth = new Date(newMonth.year, newMonth.month, 0).getDate();
+                  
+                  let targetYear = newMonth.year;
+                  let targetMonth = newMonth.month;
+                  if (day < startDay) {
+                    targetMonth += 1;
+                    if (targetMonth > 12) {
+                      targetMonth = 1;
+                      targetYear += 1;
+                    }
+                  }
+                  const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
                   const targetDay = Math.min(day, lastDayOfTargetMonth);
-                  const targetDateStr = `${newMonth.year}-${String(newMonth.month).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+                  const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
 
                   return {
                     description: exp.description,
@@ -716,9 +739,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
                 await supabase.from('expenses').insert(copies);
               }
+
+              // 2. Copiar ingresos recurrentes (identificados por terminar con \u200B)
+              const { data: prevIncomes } = await supabase
+                .from('incomes')
+                .select('*')
+                .eq('month_id', prevMonthRecord.id);
+
+              if (prevIncomes && prevIncomes.length > 0) {
+                const recurringIncomes = prevIncomes.filter(inc => inc.description && inc.description.endsWith('\u200B'));
+
+                if (recurringIncomes.length > 0) {
+                  const startDay = activeHousehold.billing_cycle_start_day;
+                  const incomeCopies = recurringIncomes.map(inc => {
+                    const prevDate = new Date(inc.date);
+                    const day = prevDate.getUTCDate();
+                    
+                    let targetYear = newMonth.year;
+                    let targetMonth = newMonth.month;
+                    if (day < startDay) {
+                      targetMonth += 1;
+                      if (targetMonth > 12) {
+                        targetMonth = 1;
+                        targetYear += 1;
+                      }
+                    }
+                    const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+                    const targetDay = Math.min(day, lastDayOfTargetMonth);
+                    const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+
+                    return {
+                      description: inc.description,
+                      amount: inc.amount,
+                      date: targetDateStr,
+                      account: inc.account,
+                      category: inc.category,
+                      is_estimated: inc.is_estimated,
+                      month_id: newMonth.id,
+                      created_by: inc.created_by
+                    };
+                  });
+
+                  await supabase.from('incomes').insert(incomeCopies);
+                }
+              }
             }
           } catch (copyErr) {
-            console.error('Error copying recurring expenses to new month:', copyErr);
+            console.error('Error copying recurring items to new month:', copyErr);
           }
           // ---------------------------------------------------------
         }
@@ -805,44 +872,251 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setInstallments(insts);
       }
 
-      // 3. Cargar ingresos del período seleccionado
-      const { data: incs, error: incError } = await supabase
-        .from('incomes')
-        .select(`
-          *,
-          profiles (display_name)
-        `)
-        .eq('month_id', activeMonthRecord.id);
+      // 3. Cargar perfiles de usuario en memoria para evitar errores de relación/FK en PostgREST
+      const { data: allProfiles } = await supabase
+        .from('profiles')
+        .select('id, display_name');
 
-      if (!incError && incs) {
-        setIncomes(incs as unknown as Income[]);
+      const profilesMap = new Map<string, { display_name: string }>();
+      if (allProfiles) {
+        allProfiles.forEach((p) => {
+          profilesMap.set(p.id, { display_name: p.display_name });
+        });
       }
 
-      // 4. Cargar gastos del período seleccionado
-      const { data: exps, error: expError } = await supabase
-        .from('expenses')
-        .select(`
-          *,
-          expense_categories (*),
-          profiles (display_name)
-        `)
-        .eq('month_id', activeMonthRecord.id);
+      // 4. Obtener todos los IDs de meses de este hogar de forma robusta e independiente de la asincronía de estados
+      const { data: dbMonths } = await supabase
+        .from('months')
+        .select('id, year, month')
+        .eq('household_id', activeHousehold.id);
+      
+      const dbMonthIds = dbMonths ? dbMonths.map((m) => m.id) : [];
+
+      // 4.1. Cargar ingresos del período seleccionado y del hogar completo
+      let incs: any[] = [];
+      let incError: any = null;
+
+      if (dbMonthIds.length > 0) {
+        const { data, error } = await supabase
+          .from('incomes')
+          .select('*')
+          .in('month_id', dbMonthIds);
+        incs = data || [];
+        incError = error;
+      } else {
+        const { data, error } = await supabase
+          .from('incomes')
+          .select('*')
+          .eq('month_id', activeMonthRecord.id);
+        incs = data || [];
+        incError = error;
+      }
+ 
+      if (!incError && incs) {
+        const enrichedIncs = incs.map((i) => {
+          const isRecurring = i.description && i.description.endsWith('\u200B');
+          return {
+            ...i,
+            description: isRecurring ? i.description.replace(/\u200B$/, '') : i.description,
+            is_recurring: isRecurring,
+            profiles: i.created_by ? profilesMap.get(i.created_by) || null : null
+          };
+        });
+        setAllIncomes(enrichedIncs as unknown as Income[]);
+        setIncomes(enrichedIncs.filter((i) => i.month_id === activeMonthRecord.id) as unknown as Income[]);
+      }
+ 
+      // 5. Cargar gastos del período seleccionado y del hogar completo
+      let exps: any[] = [];
+      let expError: any = null;
+
+      if (dbMonthIds.length > 0) {
+        const { data, error } = await supabase
+          .from('expenses')
+          .select(`
+            *,
+            expense_categories (*)
+          `)
+          .in('month_id', dbMonthIds);
+        exps = data || [];
+        expError = error;
+      } else {
+        const { data, error } = await supabase
+          .from('expenses')
+          .select(`
+            *,
+            expense_categories (*)
+          `)
+          .eq('month_id', activeMonthRecord.id);
+        exps = data || [];
+        expError = error;
+      }
+ 
+      // Autocorrección robusta de desalineaciones históricas de mes
+      if (!incError && incs && dbMonths && dbMonths.length > 0) {
+        const startDay = activeHousehold.billing_cycle_start_day || 10;
+        for (const i of incs) {
+          const correctPeriod = getFinancialPeriod(i.date, startDay);
+          const currentMonthRecord = dbMonths.find(m => m.id === i.month_id);
+          if (!currentMonthRecord || currentMonthRecord.year !== correctPeriod.year || currentMonthRecord.month !== correctPeriod.month) {
+            const correctMonthRecord = dbMonths.find(m => m.year === correctPeriod.year && m.month === correctPeriod.month);
+            if (correctMonthRecord) {
+              i.month_id = correctMonthRecord.id;
+              supabase
+                .from('incomes')
+                .update({ month_id: correctMonthRecord.id })
+                .eq('id', i.id)
+                .then(({ error }) => {
+                  if (error) console.error('Error auto-healing income month_id:', error);
+                });
+            } else {
+              const isFuture = correctPeriod.year > currentPeriod.year || 
+                (correctPeriod.year === currentPeriod.year && correctPeriod.month > currentPeriod.month);
+              const status = isFuture ? 'planning' : 'open';
+              
+              const createAndMigrate = async () => {
+                try {
+                  const { data: newMonth, error: createError } = await supabase
+                    .from('months')
+                    .insert({
+                      household_id: activeHousehold.id,
+                      year: correctPeriod.year,
+                      month: correctPeriod.month,
+                      status
+                    })
+                    .select()
+                    .single();
+                    
+                  if (!createError && newMonth) {
+                    dbMonths.push(newMonth);
+                    setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+                    
+                    i.month_id = newMonth.id;
+                    await supabase
+                      .from('incomes')
+                      .update({ month_id: newMonth.id })
+                      .eq('id', i.id);
+                      
+                    loadFinancialData();
+                  }
+                } catch (err) {
+                  console.error('Error creating month on auto-heal for income:', err);
+                }
+              };
+              createAndMigrate();
+            }
+          }
+        }
+      }
+
+      if (!expError && exps && dbMonths && dbMonths.length > 0) {
+        const startDay = activeHousehold.billing_cycle_start_day || 10;
+        for (const e of exps) {
+          const correctPeriod = getFinancialPeriod(e.date, startDay);
+          const currentMonthRecord = dbMonths.find(m => m.id === e.month_id);
+          if (!currentMonthRecord || currentMonthRecord.year !== correctPeriod.year || currentMonthRecord.month !== correctPeriod.month) {
+            const correctMonthRecord = dbMonths.find(m => m.year === correctPeriod.year && m.month === correctPeriod.month);
+            if (correctMonthRecord) {
+              e.month_id = correctMonthRecord.id;
+              supabase
+                .from('expenses')
+                .update({ month_id: correctMonthRecord.id })
+                .eq('id', e.id)
+                .then(({ error }) => {
+                  if (error) console.error('Error auto-healing expense month_id:', error);
+                });
+            } else {
+              const isFuture = correctPeriod.year > currentPeriod.year || 
+                (correctPeriod.year === correctPeriod.year && correctPeriod.month > currentPeriod.month);
+              const status = isFuture ? 'planning' : 'open';
+              
+              const createAndMigrate = async () => {
+                try {
+                  const { data: newMonth, error: createError } = await supabase
+                    .from('months')
+                    .insert({
+                      household_id: activeHousehold.id,
+                      year: correctPeriod.year,
+                      month: correctPeriod.month,
+                      status
+                    })
+                    .select()
+                    .single();
+                    
+                  if (!createError && newMonth) {
+                    dbMonths.push(newMonth);
+                    setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+                    
+                    e.month_id = newMonth.id;
+                    await supabase
+                      .from('expenses')
+                      .update({ month_id: newMonth.id })
+                      .eq('id', e.id);
+                      
+                    loadFinancialData();
+                  }
+                } catch (err) {
+                  console.error('Error creating month on auto-heal for expense:', err);
+                }
+              };
+              createAndMigrate();
+            }
+          }
+        }
+      }
 
       if (!expError && exps) {
-        setExpenses(exps as unknown as Expense[]);
+        const CHAR_EXPLICIT_DEBITED = '\u200C';
+        const CHAR_EXPLICIT_PENDING = '\u200D';
+        
+        const todayLocal = new Date();
+        const yyyy = todayLocal.getFullYear();
+        const mm = String(todayLocal.getMonth() + 1).padStart(2, '0');
+        const dd = String(todayLocal.getDate()).padStart(2, '0');
+        const todayStr = `${yyyy}-${mm}-${dd}`;
+
+        const enrichedExps = exps.map((e) => {
+          let isReconciled = false;
+          let cleanDescription = e.description || '';
+
+          const hasExplicitDebited = cleanDescription.endsWith(CHAR_EXPLICIT_DEBITED);
+          const hasExplicitPending = cleanDescription.endsWith(CHAR_EXPLICIT_PENDING);
+
+          if (hasExplicitDebited) {
+            isReconciled = true;
+            cleanDescription = cleanDescription.slice(0, -1);
+          } else if (hasExplicitPending) {
+            isReconciled = false;
+            cleanDescription = cleanDescription.slice(0, -1);
+          } else {
+            isReconciled = e.date <= todayStr;
+          }
+
+          return {
+            ...e,
+            description: cleanDescription,
+            is_reconciled: isReconciled,
+            has_explicit_debited: hasExplicitDebited,
+            has_explicit_pending: hasExplicitPending,
+            profiles: e.created_by ? profilesMap.get(e.created_by) || null : null
+          };
+        });
+        setAllExpenses(enrichedExps as unknown as Expense[]);
+        setExpenses(enrichedExps.filter((e) => e.month_id === activeMonthRecord.id) as unknown as Expense[]);
       }
 
-      // 5. Cargar gastos extraordinarios (unplanned_expenses) del período seleccionado
+      // 6. Cargar gastos extraordinarios (unplanned_expenses) del período seleccionado
       const { data: unps, error: unpError } = await supabase
         .from('unplanned_expenses')
-        .select(`
-          *,
-          profiles (display_name)
-        `)
+        .select('*')
         .eq('month_id', activeMonthRecord.id);
 
       if (!unpError && unps) {
-        setUnplannedExpenses(unps as unknown as UnplannedExpense[]);
+        const enrichedUnps = unps.map((u) => ({
+          ...u,
+          profiles: u.created_by ? profilesMap.get(u.created_by) || null : null
+        }));
+        setUnplannedExpenses(enrichedUnps as unknown as UnplannedExpense[]);
       }
 
     } catch (e) {
@@ -874,12 +1148,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .channel(`household_realtime_${activeHousehold.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'incomes', filter: `month_id=eq.${activeMonthRecord.id}` },
+        { event: '*', schema: 'public', table: 'incomes' },
         () => loadFinancialData()
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'expenses', filter: `month_id=eq.${activeMonthRecord.id}` },
+        { event: '*', schema: 'public', table: 'expenses' },
         () => loadFinancialData()
       )
       .on(
@@ -914,21 +1188,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [activeHousehold, activeMonthRecord]);
 
+  const getOrCreateMonthIdForDate = async (dateStr: string): Promise<string> => {
+    if (!activeHousehold) throw new Error("No active household");
+    const startDay = activeHousehold.billing_cycle_start_day;
+    const period = getFinancialPeriod(dateStr, startDay);
+    
+    // Buscar en la lista local de meses
+    let record = monthsData.find(m => m.year === period.year && m.month === period.month);
+    if (record) return record.id;
+    
+    // Si no está local, buscar en la base de datos por si acaso
+    const { data: dbRecord } = await supabase
+      .from('months')
+      .select('id')
+      .eq('household_id', activeHousehold.id)
+      .eq('year', period.year)
+      .eq('month', period.month)
+      .maybeSingle();
+      
+    if (dbRecord) return dbRecord.id;
+    
+    // Si no existe, crearlo
+    const isFuture = period.year > currentPeriod.year || 
+      (period.year === currentPeriod.year && period.month > currentPeriod.month);
+    const status = isFuture ? 'planning' : 'open';
+    
+    const { data: newMonth, error: createError } = await supabase
+      .from('months')
+      .insert({
+        household_id: activeHousehold.id,
+        year: period.year,
+        month: period.month,
+        status
+      })
+      .select()
+      .single();
+      
+    if (createError || !newMonth) throw createError || new Error("Failed to create month record");
+    
+    // Actualizar monthsData local
+    setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+    
+    return newMonth.id;
+  };
+
   // -------------------------------------------------------------------
   // OPERACIONES FINANCIERAS
   // -------------------------------------------------------------------
   const addIncome = async (income: Omit<Income, 'id' | 'month_id' | 'created_by' | 'created_at'>) => {
-    if (!activeMonthRecord || !user) return;
+    if (!activeMonthRecord || !user || !activeHousehold) return;
     try {
+      const { is_recurring, ...dbPayload } = income as any;
+      
+      // Si es recurrente, agregamos la marca invisible \u200B al final de la descripción
+      if (is_recurring) {
+        dbPayload.description = `${dbPayload.description}\u200B`;
+      }
+
+      const calculatedMonthId = await getOrCreateMonthIdForDate(income.date);
+
       const { error } = await supabase
         .from('incomes')
         .insert({
-          ...income,
-          month_id: activeMonthRecord.id,
+          ...dbPayload,
+          month_id: calculatedMonthId,
           created_by: user.id
         });
 
       if (error) throw error;
+
+      // Si el ingreso es recurrente, lo propagamos a meses futuros ya existentes en la DB
+      if (is_recurring) {
+        try {
+          const { data: futureMonths, error: fmError } = await supabase
+            .from('months')
+            .select('*')
+            .eq('household_id', activeHousehold.id)
+            .in('status', ['open', 'planning']);
+
+          if (!fmError && futureMonths) {
+            const activePeriod = getFinancialPeriod(income.date, activeHousehold.billing_cycle_start_day);
+            const activeYear = activePeriod.year;
+            const activeMonth = activePeriod.month;
+            
+            const filteredFutureMonths = futureMonths.filter(m => 
+              m.year > activeYear || (m.year === activeYear && m.month > activeMonth)
+            );
+
+            if (filteredFutureMonths.length > 0) {
+              const startDay = activeHousehold.billing_cycle_start_day;
+              const copiesToInsert = filteredFutureMonths.map(m => {
+                const prevDate = new Date(income.date);
+                const day = prevDate.getUTCDate();
+                
+                let targetYear = m.year;
+                let targetMonth = m.month;
+                if (day < startDay) {
+                  targetMonth += 1;
+                  if (targetMonth > 12) {
+                    targetMonth = 1;
+                    targetYear += 1;
+                  }
+                }
+                const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+                const targetDay = Math.min(day, lastDayOfTargetMonth);
+                const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+
+                return {
+                  ...dbPayload,
+                  month_id: m.id,
+                  created_by: user.id,
+                  date: targetDateStr
+                };
+              });
+
+              await supabase.from('incomes').insert(copiesToInsert);
+            }
+          }
+        } catch (propagateErr) {
+          console.error('Error propagating recurring income:', propagateErr);
+        }
+      }
+
       showToast('Ingreso registrado con éxito', 'success');
       loadFinancialData();
     } catch (e) {
@@ -938,13 +1319,127 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateIncome = async (id: string, income: Partial<Income>, adjustmentNote?: string) => {
+    if (!activeHousehold || !activeMonthRecord) return;
     try {
-      const payload: any = { ...income };
-      if (activeMonthRecord?.status === 'closed' && adjustmentNote) {
-        // En mes cerrado, no guardamos nota en incomes directamente pero validamos.
-        // Opcionalmente podemos registrar una nota. Para ingresos usaremos una validación en frontend.
+      // 1. Obtener detalles del ingreso antes de actualizarlo
+      const { data: targetIncome } = await supabase
+        .from('incomes')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (!targetIncome) throw new Error('Ingreso no encontrado');
+
+      const isTargetRecurring = targetIncome.description && targetIncome.description.endsWith('\u200B');
+
+      // 2. Si es un ingreso recurrente, propagar las modificaciones a los clones futuros
+      if (isTargetRecurring) {
+        // Cargar todos los meses registrados del hogar
+        const { data: allMonthsRecords } = await supabase
+          .from('months')
+          .select('*')
+          .eq('household_id', activeHousehold.id);
+
+        if (allMonthsRecords) {
+          const originMonth = allMonthsRecords.find((m) => m.id === targetIncome.month_id);
+          
+          if (originMonth) {
+            const originYear = originMonth.year;
+            const originMonthVal = originMonth.month;
+
+            // Filtrar todos los meses posteriores
+            const subsequentMonthIds = allMonthsRecords
+              .filter((m) => m.year > originYear || (m.year === originYear && m.month > originMonthVal))
+              .map((m) => m.id);
+
+            if (subsequentMonthIds.length > 0) {
+              // Buscar todos los ingresos recurrentes futuros coincidentes por descripción original
+              const { data: futureIncomes } = await supabase
+                .from('incomes')
+                .select('id, month_id')
+                .in('month_id', subsequentMonthIds)
+                .eq('description', targetIncome.description);
+
+              if (futureIncomes && futureIncomes.length > 0) {
+                const futureIds = futureIncomes.map((fi) => fi.id);
+
+                // Construir el payload de actualización excluyendo campos individuales e ID
+                const { is_recurring, ...dbPayload } = income as any;
+
+                // Si se actualizó la descripción, asegurar que mantenga el sufijo \u200B
+                if (dbPayload.description && !dbPayload.description.endsWith('\u200B')) {
+                  dbPayload.description = `${dbPayload.description}\u200B`;
+                }
+
+                const futurePayload: any = { ...dbPayload };
+                delete futurePayload.amount;
+                delete futurePayload.date;
+                delete futurePayload.month_id;
+                delete futurePayload.id;
+
+                // 2.1. Actualizar en lote
+                await supabase
+                  .from('incomes')
+                  .update(futurePayload)
+                  .in('id', futureIds);
+
+                // 2.2. Si la fecha cambió, actualizar el día en cada copia futura
+                if (income.date && income.date !== targetIncome.date) {
+                  try {
+                    const newDateObj = new Date(income.date);
+                    const targetDay = newDateObj.getUTCDate();
+
+                    const startDay = activeHousehold.billing_cycle_start_day;
+                    for (const fi of futureIncomes) {
+                      const mRecord = allMonthsRecords.find((m) => m.id === fi.month_id);
+                      if (mRecord) {
+                        let targetYear = mRecord.year;
+                        let targetMonth = mRecord.month;
+                        if (targetDay < startDay) {
+                          targetMonth += 1;
+                          if (targetMonth > 12) {
+                            targetMonth = 1;
+                            targetYear += 1;
+                          }
+                        }
+                        const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+                        const dayVal = Math.min(targetDay, lastDayOfTargetMonth);
+                        const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(dayVal).padStart(2, '0')}`;
+
+                        await supabase
+                          .from('incomes')
+                          .update({ date: targetDateStr })
+                          .eq('id', fi.id);
+                      }
+                    }
+                  } catch (dateUpdateErr) {
+                    console.error('Error updating future income dates:', dateUpdateErr);
+                  }
+                }
+              }
+            }
+          }
+        }
       }
-      
+
+      // 3. Actualizar el ingreso actual
+      const { is_recurring, ...payload } = income as any;
+      if (is_recurring !== undefined) {
+        if (is_recurring) {
+          if (payload.description && !payload.description.endsWith('\u200B')) {
+            payload.description = `${payload.description}\u200B`;
+          }
+        } else {
+          if (payload.description) {
+            payload.description = payload.description.replace(/\u200B$/, '');
+          }
+        }
+      }
+
+      if (income.date) {
+        payload.month_id = await getOrCreateMonthIdForDate(income.date);
+      }
+
       const { error } = await supabase
         .from('incomes')
         .update(payload)
@@ -954,19 +1449,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast('Ingreso actualizado con éxito', 'success');
       loadFinancialData();
     } catch (e) {
+      console.error('Error in updateIncome:', e);
       showToast('Error al actualizar ingreso', 'error');
       throw e;
     }
   };
 
-  const deleteIncome = async (id: string) => {
+  const deleteIncome = async (id: string, deleteFuture = false) => {
+    if (!activeHousehold || !activeMonthRecord) return;
     try {
+      // 1. Obtener detalles del ingreso antes de borrarlo
+      const { data: targetIncome } = await supabase
+        .from('incomes')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (!targetIncome) throw new Error('Ingreso no encontrado');
+
+      // 2. Borrar el ingreso seleccionado
       const { error } = await supabase
         .from('incomes')
         .delete()
         .eq('id', id);
 
       if (error) throw error;
+
+      // 3. Si deleteFuture es true, borrar los ingresos idénticos de los meses siguientes
+      if (deleteFuture) {
+        try {
+          const { data: futureMonths } = await supabase
+            .from('months')
+            .select('*')
+            .eq('household_id', activeHousehold.id)
+            .in('status', ['open', 'planning']);
+
+          if (futureMonths) {
+            const activeYear = activeMonthRecord.year;
+            const activeMonth = activeMonthRecord.month;
+            
+            const filteredMonths = futureMonths.filter(m => 
+              m.year > activeYear || (m.year === activeYear && m.month > activeMonth)
+            );
+
+            if (filteredMonths.length > 0) {
+              const monthIds = filteredMonths.map(m => m.id);
+              await supabase
+                .from('incomes')
+                .delete()
+                .in('month_id', monthIds)
+                .eq('description', targetIncome.description)
+                .eq('amount', targetIncome.amount)
+                .eq('account', targetIncome.account);
+            }
+          }
+        } catch (futureErr) {
+          console.error('Error deleting future incomes:', futureErr);
+        }
+      }
+
       showToast('Ingreso eliminado', 'info');
       loadFinancialData();
     } catch (e) {
@@ -974,15 +1515,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const addExpense = async (expense: Omit<Expense, 'id' | 'month_id' | 'created_by' | 'created_at' | 'installment_id' | 'installment_number'>) => {
+  const addExpense = async (expense: Omit<Expense, 'id' | 'month_id' | 'created_by' | 'created_at'>) => {
     if (!activeMonthRecord || !user || !activeHousehold) return;
     try {
+      const calculatedMonthId = await getOrCreateMonthIdForDate(expense.date);
       // 1. Insertar el gasto en el mes activo
       const { error } = await supabase
         .from('expenses')
         .insert({
           ...expense,
-          month_id: activeMonthRecord.id,
+          month_id: calculatedMonthId,
           created_by: user.id
         });
 
@@ -998,20 +1540,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             .in('status', ['open', 'planning']);
 
           if (!fmError && futureMonths) {
-            const activeYear = activeMonthRecord.year;
-            const activeMonth = activeMonthRecord.month;
+            const activePeriod = getFinancialPeriod(expense.date, activeHousehold.billing_cycle_start_day);
+            const activeYear = activePeriod.year;
+            const activeMonth = activePeriod.month;
             
             const filteredFutureMonths = futureMonths.filter(m => 
               m.year > activeYear || (m.year === activeYear && m.month > activeMonth)
             );
 
             if (filteredFutureMonths.length > 0) {
+              const startDay = activeHousehold.billing_cycle_start_day;
               const copiesToInsert = filteredFutureMonths.map(m => {
                 const prevDate = new Date(expense.date);
                 const day = prevDate.getUTCDate();
-                const lastDayOfTargetMonth = new Date(m.year, m.month, 0).getDate();
+                
+                let targetYear = m.year;
+                let targetMonth = m.month;
+                if (day < startDay) {
+                  targetMonth += 1;
+                  if (targetMonth > 12) {
+                    targetMonth = 1;
+                    targetYear += 1;
+                  }
+                }
+                const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
                 const targetDay = Math.min(day, lastDayOfTargetMonth);
-                const targetDateStr = `${m.year}-${String(m.month).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+                const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
 
                 return {
                   ...expense,
@@ -1038,28 +1592,242 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateExpense = async (id: string, expense: Partial<Expense>, adjustmentNote?: string) => {
+    if (!activeHousehold || !activeMonthRecord) return;
+    console.log('[DEBUG updateExpense] Starting update for expense ID:', id, 'Payload:', expense);
     try {
+      // 1. Obtener detalles del gasto antes de actualizarlo para identificar clones futuros
+      const { data: targetExpense, error: targetError } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (targetError || !targetExpense) {
+        console.error('[DEBUG updateExpense] Target expense not found or error:', targetError);
+        throw new Error('Gasto no encontrado');
+      }
+
+      console.log('[DEBUG updateExpense] Target expense found:', {
+        description: targetExpense.description,
+        is_recurring: targetExpense.is_recurring,
+        month_id: targetExpense.month_id,
+        category_id: targetExpense.category_id,
+        account: targetExpense.account
+      });
+
+      // 2. Si es un gasto recurrente y hay cambios generales (no solo de conciliación), propagar las modificaciones a los clones futuros
+      const cleanDesc = (d: string) => (d || '').replace(/\u200C/g, '').replace(/\u200D/g, '');
+      const cleanNewDesc = cleanDesc(expense.description || '');
+      const cleanOldDesc = cleanDesc(targetExpense.description || '');
+
+      const hasGeneralChanges = 
+        (expense.category_id !== undefined && expense.category_id !== targetExpense.category_id) ||
+        (expense.account !== undefined && expense.account !== targetExpense.account) ||
+        (expense.holder !== undefined && expense.holder !== targetExpense.holder) ||
+        (expense.notes !== undefined && expense.notes !== targetExpense.notes) ||
+        (expense.description !== undefined && cleanNewDesc !== cleanOldDesc);
+
+      if (targetExpense.is_recurring && hasGeneralChanges) {
+        console.log('[DEBUG updateExpense] Expense is recurring and has general changes. Loading all months...');
+        // Cargar todos los meses registrados del hogar
+        const { data: allMonthsRecords, error: monthsErr } = await supabase
+          .from('months')
+          .select('*')
+          .eq('household_id', activeHousehold.id);
+
+        if (monthsErr) {
+          console.error('[DEBUG updateExpense] Error loading months:', monthsErr);
+        }
+
+        if (allMonthsRecords) {
+          // Identificar el mes de origen exacto del gasto que estamos editando
+          const originMonth = allMonthsRecords.find((m) => m.id === targetExpense.month_id);
+          console.log('[DEBUG updateExpense] Origin month of targetExpense:', originMonth);
+          
+          if (originMonth) {
+            const originYear = originMonth.year;
+            const originMonthVal = originMonth.month;
+
+            // Filtrar todos los meses posteriores de forma cronológica
+            const subsequentMonthIds = allMonthsRecords
+              .filter((m) => m.year > originYear || (m.year === originYear && m.month > originMonthVal))
+              .map((m) => m.id);
+
+            console.log('[DEBUG updateExpense] Subsequent month IDs:', subsequentMonthIds);
+
+            if (subsequentMonthIds.length > 0) {
+              // Buscar todos los gastos recurrentes futuros coincidentes por descripción original y flag de recurrencia
+              console.log('[DEBUG updateExpense] Querying future expenses with description:', targetExpense.description);
+              const { data: futureExpenses, error: fetchErr } = await supabase
+                .from('expenses')
+                .select('id, month_id, description, is_recurring')
+                .in('month_id', subsequentMonthIds)
+                .eq('description', targetExpense.description)
+                .eq('is_recurring', true);
+
+              if (fetchErr) {
+                console.error('[DEBUG updateExpense] Error fetching future recurring expenses for replication:', fetchErr);
+              }
+
+              console.log('[DEBUG updateExpense] Found future matching expenses:', futureExpenses);
+
+              if (futureExpenses && futureExpenses.length > 0) {
+                const futureIds = futureExpenses.map((fe) => fe.id);
+
+                // Construir el payload de actualización excluyendo campos individuales e ID
+                const futurePayload: any = { ...expense };
+                if (futurePayload.description) {
+                  futurePayload.description = cleanDesc(futurePayload.description);
+                }
+                delete futurePayload.amount;
+                delete futurePayload.date;
+                delete futurePayload.adjustment_note;
+                delete futurePayload.month_id;
+                delete futurePayload.id;
+
+                console.log('[DEBUG updateExpense] Batch updating future expenses with payload:', futurePayload);
+
+                // 2.1. Actualizar campos generales (descripción, categoría, cuenta, titular, notas) en lote para estos IDs
+                const { error: batchUpdateErr } = await supabase
+                  .from('expenses')
+                  .update(futurePayload)
+                  .in('id', futureIds);
+
+                if (batchUpdateErr) {
+                  console.error('[DEBUG updateExpense] Error in batch update of future recurring expenses:', batchUpdateErr);
+                } else {
+                  console.log('[DEBUG updateExpense] Batch update of future expenses succeeded!');
+                }
+
+                // 2.2. Si la fecha (de debitación) cambió, re-calcular el día y actualizar la fecha de cada copia según su mes correspondiente
+                if (expense.date && expense.date !== targetExpense.date) {
+                  console.log('[DEBUG updateExpense] Date changed from', targetExpense.date, 'to', expense.date, '. Updating individual future dates...');
+                  try {
+                    const newDateObj = new Date(expense.date);
+                    const targetDay = newDateObj.getUTCDate();
+
+                    const startDay = activeHousehold.billing_cycle_start_day;
+                    for (const fe of futureExpenses) {
+                      const mRecord = allMonthsRecords.find((m) => m.id === fe.month_id);
+                      if (mRecord) {
+                        let targetYear = mRecord.year;
+                        let targetMonth = mRecord.month;
+                        if (targetDay < startDay) {
+                          targetMonth += 1;
+                          if (targetMonth > 12) {
+                            targetMonth = 1;
+                            targetYear += 1;
+                          }
+                        }
+                        const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+                        const dayVal = Math.min(targetDay, lastDayOfTargetMonth);
+                        const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(dayVal).padStart(2, '0')}`;
+
+                        console.log('[DEBUG updateExpense] Updating future expense', fe.id, 'date to:', targetDateStr);
+                        const { error: dateErr } = await supabase
+                          .from('expenses')
+                          .update({ date: targetDateStr })
+                          .eq('id', fe.id);
+
+                        if (dateErr) {
+                          console.error('[DEBUG updateExpense] Error updating date for', fe.id, ':', dateErr);
+                        }
+                      }
+                    }
+                  } catch (dateUpdateErr) {
+                    console.error('[DEBUG updateExpense] Error updating future expense dates:', dateUpdateErr);
+                  }
+                }
+              } else {
+                console.log('[DEBUG updateExpense] No future matching recurring expenses found.');
+              }
+            } else {
+              console.log('[DEBUG updateExpense] No subsequent months found.');
+            }
+          }
+        }
+      } else {
+        console.log('[DEBUG updateExpense] targetExpense is NOT recurring.');
+      }
+
+      // 3. Actualizar el gasto actual
       const payload: any = { ...expense };
       if (activeMonthRecord?.status === 'closed' && adjustmentNote) {
         payload.adjustment_note = adjustmentNote;
       }
       
+      if (expense.date) {
+        payload.month_id = await getOrCreateMonthIdForDate(expense.date);
+      }
+      
+      console.log('[DEBUG updateExpense] Updating current expense', id, 'with payload:', payload);
       const { error } = await supabase
         .from('expenses')
         .update(payload)
         .eq('id', id);
 
-      if (error) throw error;
+      if (error) {
+        console.error('[DEBUG updateExpense] Error updating current expense:', error);
+        throw error;
+      }
+      
+      console.log('[DEBUG updateExpense] Current expense updated successfully!');
       showToast('Gasto actualizado con éxito', 'success');
       loadFinancialData();
     } catch (e) {
+      console.error('[DEBUG updateExpense] Error in updateExpense:', e);
       showToast('Error al actualizar gasto', 'error');
       throw e;
     }
   };
 
-  const deleteExpense = async (id: string) => {
+  const deleteExpense = async (id: string, deleteFuture = false) => {
+    if (!activeHousehold || !activeMonthRecord) return;
     try {
+      // 1. Obtener detalles del gasto antes de borrarlo
+      const { data: targetExpense } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (!targetExpense) throw new Error('Gasto no encontrado');
+
+      // 2. Si se solicitó borrar futuros y es un gasto recurrente
+      if (deleteFuture && targetExpense.is_recurring) {
+        const currentYear = activeMonthRecord.year;
+        const currentMonth = activeMonthRecord.month;
+
+        // Cargar todos los meses registrados del hogar
+        const { data: allMonthsRecords } = await supabase
+          .from('months')
+          .select('*')
+          .eq('household_id', activeHousehold.id);
+
+        if (allMonthsRecords) {
+          // Filtrar meses posteriores al mes del gasto
+          const subsequentMonthIds = allMonthsRecords
+            .filter((m) => m.year > currentYear || (m.year === currentYear && m.month > currentMonth))
+            .map((m) => m.id);
+
+          if (subsequentMonthIds.length > 0) {
+            // Eliminar gastos recurrentes futuros idénticos en esos meses
+            const { error: deleteFutureError } = await supabase
+              .from('expenses')
+              .delete()
+              .in('month_id', subsequentMonthIds)
+              .eq('description', targetExpense.description)
+              .eq('category_id', targetExpense.category_id)
+              .eq('is_recurring', true);
+
+            if (deleteFutureError) {
+              console.error('Error deleting future recurrings:', deleteFutureError);
+            }
+          }
+        }
+      }
+
+      // 3. Eliminar el gasto actual
       const { error } = await supabase
         .from('expenses')
         .delete()
@@ -1069,6 +1837,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast('Gasto eliminado', 'info');
       loadFinancialData();
     } catch (e) {
+      console.error('Error in deleteExpense:', e);
       showToast('Error al eliminar gasto', 'error');
     }
   };
@@ -1076,6 +1845,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addInstallment = async (installment: Omit<Installment, 'id' | 'household_id' | 'created_by' | 'created_at'>) => {
     if (!activeHousehold || !user) return;
     try {
+      // 1. Intentar insertar con la nueva columna first_debit_day
       const { error } = await supabase
         .from('installments')
         .insert({
@@ -1084,7 +1854,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           created_by: user.id
         });
 
-      if (error) throw error;
+      if (error) {
+        // Fallback defensivo: si falla por columna no encontrada (ej. por no correr la migración SQL aún)
+        console.warn('Fallo al registrar con columna first_debit_day. Reintentando sin ella...', error);
+        const { first_debit_day, ...fallbackInstallment } = installment as any;
+        const { error: fallbackError } = await supabase
+          .from('installments')
+          .insert({
+            ...fallbackInstallment,
+            household_id: activeHousehold.id,
+            created_by: user.id
+          });
+          
+        if (fallbackError) throw fallbackError;
+      }
+      
       showToast('Compra en cuotas registrada. Se proyectará automáticamente.', 'success');
       loadFinancialData();
     } catch (e) {
@@ -1105,6 +1889,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       loadFinancialData();
     } catch (e) {
       showToast('Error al cancelar compra a plazos', 'error');
+    }
+  };
+
+  const updateInstallment = async (id: string, installment: Partial<Installment>) => {
+    try {
+      // 1. Intentar actualizar con la nueva columna first_debit_day
+      const { error } = await supabase
+        .from('installments')
+        .update(installment)
+        .eq('id', id);
+
+      if (error) {
+        // Fallback defensivo si la columna no existe
+        console.warn('Fallo al actualizar con columna first_debit_day. Reintentando sin ella...', error);
+        const { first_debit_day, ...fallbackInstallment } = installment as any;
+        const { error: fallbackError } = await supabase
+          .from('installments')
+          .update(fallbackInstallment)
+          .eq('id', id);
+          
+        if (fallbackError) throw fallbackError;
+      }
+      
+      showToast('Cuota/Préstamo actualizado con éxito', 'success');
+      loadFinancialData();
+    } catch (e) {
+      showToast('Error al actualizar cuota/préstamo', 'error');
+      throw e;
     }
   };
 
@@ -1197,7 +2009,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reopenMonth,
         
         incomes,
+        allIncomes,
         expenses,
+        allExpenses,
         unplannedExpenses,
         installments,
         savingsConfig,
@@ -1211,6 +2025,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteExpense,
         addInstallment,
         cancelInstallment,
+        updateInstallment,
         addUnplannedExpense,
         deleteUnplannedExpense,
         updateSavingsConfig,

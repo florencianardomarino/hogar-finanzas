@@ -6,12 +6,12 @@ import { PieChart, TrendingUp, TrendingDown, Users, Landmark, CreditCard, Sparkl
 
 export const MonthlySummaryScreen: React.FC = () => {
   const { 
-    monthsData, incomes, expenses, unplannedExpenses, installments, savingsConfig, selectedPeriod, categories, activeHousehold
+    monthsData, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, installments, savingsConfig, selectedPeriod, categories, activeHousehold
   } = useApp();
 
   // Calcular finanzas encadenadas
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, incomes, expenses, unplannedExpenses, installments, savingsConfig
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10
   );
 
   // Período seleccionado actual
@@ -44,11 +44,16 @@ export const MonthlySummaryScreen: React.FC = () => {
     'Compartido'
   ];
 
-  const currentAccounts: any[] = activeHousehold?.accounts || [
+  const baseAccounts = activeHousehold?.accounts || [
     { id: '1', name: activeHousehold?.account_1_name || 'Cuenta Titular 1', type: 'bank_account', holder: activeHousehold?.holder_1_name || 'Titular 1' },
     { id: '2', name: activeHousehold?.account_2_name || 'Cuenta Titular 2', type: 'bank_account', holder: activeHousehold?.holder_2_name || 'Titular 2' },
     { id: '3', name: activeHousehold?.account_joint_name || 'Cuenta conjunta', type: 'bank_account', holder: 'Compartido' }
   ];
+
+  const currentAccounts: any[] = [...baseAccounts];
+  if (!currentAccounts.some(acc => acc.type === 'cash' || acc.name.toLowerCase() === 'efectivo')) {
+    currentAccounts.push({ id: 'cash-fallback', name: 'Efectivo', type: 'cash', holder: 'Compartido' });
+  }
 
   // -------------------------------------------------------------------
   // 1. DESGLOSE POR TITULAR (RESPONSABLE) - DINÁMICO
@@ -131,7 +136,7 @@ export const MonthlySummaryScreen: React.FC = () => {
   });
 
   return (
-    <div className="px-4 py-5 pb-24 animate-fade-in">
+    <div className="px-4 py-5 safe-bottom-padding animate-fade-in">
       <div className="mb-6">
         <h2 className="text-xl font-extrabold font-sans text-gradient-sky">Resumen Mensual</h2>
         <p className="text-xs text-lux-muted mt-0.5">{getPeriodLabel(selectedPeriod.year, selectedPeriod.month)}</p>
