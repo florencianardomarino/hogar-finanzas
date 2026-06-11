@@ -16,19 +16,36 @@ export interface FinancialPeriod {
  * - Del 1 al 9 de junio pertenece a "Mayo".
  */
 export function getFinancialPeriod(date: Date | string, billingCycleStartDay: number): FinancialPeriod {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  
-  // Usamos métodos UTC o locales. Para evitar problemas de zona horaria al registrar
-  // fechas puras de la base de datos "YYYY-MM-DD", realizamos el parsing con cuidado.
-  let year = d.getFullYear();
-  let month = d.getMonth() + 1; // 0-indexed -> 1-indexed
-  const day = d.getDate();
+  let year: number;
+  let month: number;
+  let day: number;
 
-  if (isNaN(year) || isNaN(month)) {
-    // Fallback por si hay error de parsing
+  if (typeof date === 'string') {
+    // Si es un string en formato YYYY-MM-DD, extraemos los componentes directamente
+    // para evitar cualquier sesgo de huso horario local o UTC
+    const cleanDateStr = date.split('T')[0];
+    const parts = cleanDateStr.split('-');
+    if (parts.length === 3) {
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10);
+      day = parseInt(parts[2], 10);
+    } else {
+      const d = new Date(date);
+      year = d.getFullYear();
+      month = d.getMonth() + 1;
+      day = d.getDate();
+    }
+  } else {
+    year = date.getFullYear();
+    month = date.getMonth() + 1;
+    day = date.getDate();
+  }
+
+  if (isNaN(year) || isNaN(month) || isNaN(day)) {
     const today = new Date();
     year = today.getFullYear();
     month = today.getMonth() + 1;
+    day = today.getDate();
   }
 
   if (day < billingCycleStartDay) {

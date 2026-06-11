@@ -73,6 +73,7 @@ interface AppContextType {
   updateInstallment: (id: string, installment: Partial<Installment>) => Promise<void>;
   
   addUnplannedExpense: (unplanned: Omit<UnplannedExpense, 'id' | 'household_id' | 'month_id' | 'created_by' | 'created_at'>) => Promise<void>;
+  updateUnplannedExpense: (id: string, unplanned: Partial<UnplannedExpense>) => Promise<void>;
   deleteUnplannedExpense: (id: string) => Promise<void>;
   
   updateSavingsConfig: (balance: number) => Promise<void>;
@@ -1656,17 +1657,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             console.log('[DEBUG updateExpense] Subsequent month IDs:', subsequentMonthIds);
 
             if (subsequentMonthIds.length > 0) {
-              // Buscar todos los gastos recurrentes futuros coincidentes por descripción original y flag de recurrencia
-              console.log('[DEBUG updateExpense] Querying future expenses with description:', targetExpense.description);
-              const { data: futureExpenses, error: fetchErr } = await supabase
+              // Buscar todos los gastos recurrentes futuros de la misma categoría y flag de recurrencia
+              console.log('[DEBUG updateExpense] Querying future expenses for category:', targetExpense.category_id);
+              const { data: rawFutureExpenses, error: fetchErr } = await supabase
                 .from('expenses')
                 .select('id, month_id, description, is_recurring')
                 .in('month_id', subsequentMonthIds)
-                .eq('description', targetExpense.description)
+                .eq('category_id', targetExpense.category_id)
                 .eq('is_recurring', true);
 
               if (fetchErr) {
                 console.error('[DEBUG updateExpense] Error fetching future recurring expenses for replication:', fetchErr);
+              }
+
+              let futureExpenses: any[] = [];
+              if (rawFutureExpenses) {
+                const cleanDescFn = (d: string) => (d || '').replace(/\u200C/g, '').replace(/\u200D/g, '').trim().toLowerCase();
+                const cleanedTarget = cleanDescFn(targetExpense.description);
+                futureExpenses = rawFutureExpenses.filter(fe => cleanDescFn(fe.description) === cleanedTarget);
               }
 
               console.log('[DEBUG updateExpense] Found future matching expenses:', futureExpenses);
@@ -1811,17 +1819,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             .map((m) => m.id);
 
           if (subsequentMonthIds.length > 0) {
-            // Eliminar gastos recurrentes futuros idénticos en esos meses
-            const { error: deleteFutureError } = await supabase
+            // Cargar todos los gastos recurrentes futuros de la misma categoría en esos meses
+            const { data: futureExps } = await supabase
               .from('expenses')
-              .delete()
+              .select('id, description')
               .in('month_id', subsequentMonthIds)
-              .eq('description', targetExpense.description)
               .eq('category_id', targetExpense.category_id)
               .eq('is_recurring', true);
 
-            if (deleteFutureError) {
-              console.error('Error deleting future recurrings:', deleteFutureError);
+            if (futureExps && futureExps.length > 0) {
+              // Limpiar descripción obviando sufijos invisibles de conciliación (debitado / pendiente)
+              const cleanDesc = (d: string) => (d || '').replace(/\u200C/g, '').replace(/\u200D/g, '').trim().toLowerCase();
+              const cleanedTarget = cleanDesc(targetExpense.description);
+
+              const idsToDelete = futureExps
+                .filter(e => cleanDesc(e.description) === cleanedTarget)
+                .map(e => e.id);
+
+              if (idsToDelete.length > 0) {
+                const { error: deleteFutureError } = await supabase
+                  .from('expenses')
+                  .delete()
+                  .in('id', idsToDelete);
+
+                if (deleteFutureError) {
+                  console.error('Error deleting future recurrings:', deleteFutureError);
+                }
+              }
             }
           }
         }
@@ -1956,6 +1980,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const updateUnplannedExpense = async (id: string, unplanned: Partial<UnplannedExpense>) => {
+    try {
+      const { error } = await supabase
+        .from('unplanned_expenses')
+        .update(unplanned)
+        .eq('id', id);
+
+      if (error) throw error;
+      showToast('Gasto imprevisto actualizado', 'success');
+      loadFinancialData();
+    } catch (e) {
+      showToast('Error al actualizar gasto imprevisto', 'error');
+      throw e;
+    }
+  };
+
   const updateSavingsConfig = async (balance: number) => {
     if (!activeHousehold) return;
     try {
@@ -2027,6 +2067,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cancelInstallment,
         updateInstallment,
         addUnplannedExpense,
+        updateUnplannedExpense,
         deleteUnplannedExpense,
         updateSavingsConfig,
         

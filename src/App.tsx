@@ -264,7 +264,7 @@ const AppContent: React.FC = () => {
         </div>
 
         {/* --- Selector de Período Global --- */}
-        {activeTab !== 'settings' && (
+        {activeTab !== 'settings' && activeTab !== 'savings' && (
           <div className="flex gap-2 overflow-x-auto py-3 px-4 scrollbar-none border-b border-lux-border/10 select-none bg-lux-bg/40 backdrop-blur-md scroll-smooth sticky top-[51px] md:top-0 z-20">
             {navMonths.map((p: FinancialPeriod, idx: number) => {
               const isSelected = arePeriodsEqual(p, selectedPeriod);
