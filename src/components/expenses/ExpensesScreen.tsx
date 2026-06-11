@@ -485,16 +485,14 @@ export const ExpensesScreen: React.FC = () => {
                           </span>
                           {activeMonthRecord?.status !== 'closed' && (
                             <div className="flex items-center gap-0.5">
-                              {!isProjected && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleEditClick(exp); }}
-                                  className="p-2 rounded-full hover:bg-lux-border/50 text-lux-muted hover:text-lux-text transition-colors cursor-pointer"
-                                  title="Editar"
-                                >
-                                  <Edit3 size={12} />
-                                </button>
-                              )}
-                              {!isMock && !isProjected && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleEditClick(exp); }}
+                                className="p-2 rounded-full hover:bg-lux-border/50 text-lux-muted hover:text-lux-text transition-colors cursor-pointer"
+                                title="Editar"
+                              >
+                                <Edit3 size={12} />
+                              </button>
+                              {!isMock && (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); handleDeleteClick(exp); }}
                                   className="p-2 rounded-full hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 transition-colors cursor-pointer"

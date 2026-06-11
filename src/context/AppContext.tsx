@@ -1592,15 +1592,126 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const realizeProjectedExpense = async (projectedId: string): Promise<string> => {
+    if (!activeHousehold || !user) throw new Error("No active household or user");
+    
+    const match = projectedId.match(/^proj-exp-(.+)-(\d+)-(\d+)$/);
+    if (!match) throw new Error("Invalid projected ID format");
+    
+    const originalId = match[1];
+    const targetYear = parseInt(match[2], 10);
+    const targetMonth = parseInt(match[3], 10);
+    
+    // 1. Asegurar que el mes de destino exista en la base de datos
+    let targetMonthRecord = monthsData.find(m => m.year === targetYear && m.month === targetMonth);
+    if (!targetMonthRecord) {
+      const isFuture = targetYear > currentPeriod.year || 
+        (targetYear === currentPeriod.year && targetMonth > currentPeriod.month);
+      const status = isFuture ? 'planning' : 'open';
+      
+      const { data: newMonth, error: createError } = await supabase
+        .from('months')
+        .insert({
+          household_id: activeHousehold.id,
+          year: targetYear,
+          month: targetMonth,
+          status
+        })
+        .select()
+        .single();
+        
+      if (createError || !newMonth) throw new Error("Error creating month for projection");
+      targetMonthRecord = newMonth;
+      setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+    }
+    
+    if (!targetMonthRecord) throw new Error("Target month record not found");
+    
+    // 2. Comprobar si el gasto ya existe físicamente en este mes
+    const { data: existingExps } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('month_id', targetMonthRecord.id);
+      
+    const { data: originalExpense } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('id', originalId)
+      .single();
+      
+    if (!originalExpense) throw new Error("Original expense not found");
+    
+    const cleanDesc = (d: string) => (d || '').replace(/\u200C/g, '').replace(/\u200D/g, '').trim().toLowerCase();
+    const targetCleanDesc = cleanDesc(originalExpense.description);
+    
+    const matchingCopiedExp = existingExps?.find(e => 
+      cleanDesc(e.description) === targetCleanDesc && 
+      Number(e.amount) === Number(originalExpense.amount) &&
+      e.category_id === originalExpense.category_id
+    );
+    
+    if (matchingCopiedExp) {
+      return matchingCopiedExp.id;
+    }
+    
+    // 3. Si no existe, creamos la copia física de la proyección en el mes de destino
+    const startDay = activeHousehold.billing_cycle_start_day;
+    const prevDate = new Date(originalExpense.date);
+    const day = prevDate.getUTCDate();
+    
+    let yearVal = targetMonthRecord.year;
+    let monthVal = targetMonthRecord.month;
+    if (day < startDay) {
+      monthVal += 1;
+      if (monthVal > 12) {
+        monthVal = 1;
+        yearVal += 1;
+      }
+    }
+    const lastDayOfTargetMonth = new Date(yearVal, monthVal, 0).getDate();
+    const targetDay = Math.min(day, lastDayOfTargetMonth);
+    const targetDateStr = `${yearVal}-${String(monthVal).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+    
+    const { data: createdExp, error: createExpErr } = await supabase
+      .from('expenses')
+      .insert({
+        description: originalExpense.description,
+        amount: originalExpense.amount,
+        date: targetDateStr,
+        account: originalExpense.account,
+        holder: originalExpense.holder,
+        category_id: originalExpense.category_id,
+        is_planned: originalExpense.is_planned,
+        notes: originalExpense.notes,
+        is_recurring: true,
+        month_id: targetMonthRecord.id,
+        created_by: user.id
+      })
+      .select()
+      .single();
+      
+    if (createExpErr || !createdExp) {
+      console.error("Error creating physical copy of projected expense:", createExpErr);
+      throw new Error("Error materializing projected expense");
+    }
+    
+    return createdExp.id;
+  };
+
   const updateExpense = async (id: string, expense: Partial<Expense>, adjustmentNote?: string) => {
     if (!activeHousehold || !activeMonthRecord) return;
     console.log('[DEBUG updateExpense] Starting update for expense ID:', id, 'Payload:', expense);
     try {
+      let targetId = id;
+      if (id.startsWith('proj-exp-')) {
+        targetId = await realizeProjectedExpense(id);
+      }
+
       // 1. Obtener detalles del gasto antes de actualizarlo para identificar clones futuros
       const { data: targetExpense, error: targetError } = await supabase
         .from('expenses')
         .select('*')
-        .eq('id', id)
+        .eq('id', targetId)
         .single();
 
       if (targetError || !targetExpense) {
@@ -1768,11 +1879,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         payload.month_id = await getOrCreateMonthIdForDate(expense.date);
       }
       
-      console.log('[DEBUG updateExpense] Updating current expense', id, 'with payload:', payload);
+      console.log('[DEBUG updateExpense] Updating current expense', targetId, 'with payload:', payload);
       const { error } = await supabase
         .from('expenses')
         .update(payload)
-        .eq('id', id);
+        .eq('id', targetId);
 
       if (error) {
         console.error('[DEBUG updateExpense] Error updating current expense:', error);
@@ -1792,11 +1903,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteExpense = async (id: string, deleteFuture = false) => {
     if (!activeHousehold || !activeMonthRecord) return;
     try {
+      let targetId = id;
+      if (id.startsWith('proj-exp-')) {
+        targetId = await realizeProjectedExpense(id);
+      }
+
       // 1. Obtener detalles del gasto antes de borrarlo
       const { data: targetExpense } = await supabase
         .from('expenses')
         .select('*')
-        .eq('id', id)
+        .eq('id', targetId)
         .single();
 
       if (!targetExpense) throw new Error('Gasto no encontrado');
@@ -1855,7 +1971,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { error } = await supabase
         .from('expenses')
         .delete()
-        .eq('id', id);
+        .eq('id', targetId);
 
       if (error) throw error;
       showToast('Gasto eliminado', 'info');
