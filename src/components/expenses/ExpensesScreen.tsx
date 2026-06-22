@@ -80,10 +80,6 @@ export const ExpensesScreen: React.FC = () => {
   const handleToggleReconciled = async (exp: any, e: React.MouseEvent) => {
     e.stopPropagation(); // Evitar abrir modal de detalle
     
-    if (exp.id.startsWith('inst-mock') || exp.id.startsWith('proj-exp-')) {
-      return;
-    }
-
     const cleanDesc = exp.description
       .replace(/\u200C/g, '')
       .replace(/\u200D/g, '');
@@ -241,34 +237,16 @@ export const ExpensesScreen: React.FC = () => {
     }
 
     try {
-      if (editingExpense.id.startsWith('inst-mock')) {
-        // Es una cuota proyectada (mock) -> Insertamos un registro físico (override)
-        await addExpense({
-          description: desc,
-          amount: parseFloat(amount),
-          date,
-          account,
-          holder,
-          category_id: category,
-          is_planned: activeMonthRecord?.status === 'planning',
-          notes: notes || null,
-          is_recurring: false,
-          adjustment_note: isClosed ? adjustmentNote : null,
-          installment_id: editingExpense.installment_id,
-          installment_number: editingExpense.installment_number
-        } as any);
-      } else {
-        // Gasto normal u override existente
-        await updateExpense(editingExpense.id, {
-          description: desc,
-          amount: parseFloat(amount),
-          date,
-          account,
-          holder,
-          category_id: category,
-          notes: notes || null
-        }, isClosed ? adjustmentNote : undefined);
-      }
+      // Gasto normal, recurrente o cuota proyectada (se materializan transparentemente en updateExpense)
+      await updateExpense(editingExpense.id, {
+        description: desc,
+        amount: parseFloat(amount),
+        date,
+        account,
+        holder,
+        category_id: category,
+        notes: notes || null
+      }, isClosed ? adjustmentNote : undefined);
       setEditingExpense(null);
     } catch (e) {}
   };
@@ -440,24 +418,17 @@ export const ExpensesScreen: React.FC = () => {
                         
                         <div className="flex items-center gap-3 pr-3 min-w-0">
                           {/* Checkbox circular interactivo */}
-                          {!isMock && !isProjected ? (
-                            <button
-                              onClick={(e) => handleToggleReconciled(exp, e)}
-                              className={`w-5 h-5 rounded-full border shrink-0 flex items-center justify-center transition-all cursor-pointer ${
-                                exp.is_reconciled
-                                  ? 'bg-brand-emerald/20 border-brand-emerald text-brand-emerald animate-pulse-slow'
-                                  : 'border-lux-border hover:border-lux-muted text-transparent'
-                              }`}
-                              title={exp.is_reconciled ? "Marcar como pendiente" : "Marcar como debitado"}
-                            >
-                              <Check size={12} className="stroke-[3]" />
-                            </button>
-                          ) : (
-                            // Icono deshabilitado/sutil para proyectados
-                            <div className="w-5 h-5 rounded-full border border-lux-border/30 shrink-0 flex items-center justify-center text-lux-muted/20" title="Proyección (no editable)">
-                              <Check size={12} className="opacity-10" />
-                            </div>
-                          )}
+                          <button
+                            onClick={(e) => handleToggleReconciled(exp, e)}
+                            className={`w-5 h-5 rounded-full border shrink-0 flex items-center justify-center transition-all cursor-pointer ${
+                              exp.is_reconciled
+                                ? 'bg-brand-emerald/20 border-brand-emerald text-brand-emerald animate-pulse-slow'
+                                : 'border-lux-border hover:border-lux-muted text-transparent'
+                            }`}
+                            title={exp.is_reconciled ? "Marcar como pendiente" : "Marcar como debitado"}
+                          >
+                            <Check size={12} className="stroke-[3]" />
+                          </button>
 
                           <div className="flex flex-col gap-0.5 min-w-0">
                             <span className={`text-xs font-bold text-lux-text truncate ${exp.is_reconciled ? 'text-lux-muted/65 font-medium' : ''}`}>{exp.description}</span>
@@ -492,15 +463,13 @@ export const ExpensesScreen: React.FC = () => {
                               >
                                 <Edit3 size={12} />
                               </button>
-                              {!isMock && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(exp); }}
-                                  className="p-2 rounded-full hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 transition-colors cursor-pointer"
-                                  title="Eliminar"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteClick(exp); }}
+                                className="p-2 rounded-full hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 transition-colors cursor-pointer"
+                                title="Eliminar"
+                              >
+                                <Trash2 size={12} />
+                              </button>
                             </div>
                           )}
                         </div>
@@ -726,7 +695,8 @@ export const ExpensesScreen: React.FC = () => {
                   .filter((c) => {
                     const isCuotas = c.name.toLowerCase() === 'cuotas';
                     const isUnplanned = c.name.toLowerCase() === 'gastos no planificados';
-                    if (editingExpense?.id?.startsWith('inst-mock') && isCuotas) {
+                    const isInstallment = editingExpense?.id?.startsWith('inst-mock') || !!editingExpense?.installment_id;
+                    if (isInstallment && isCuotas) {
                       return true;
                     }
                     return !isCuotas && !isUnplanned;

@@ -1698,6 +1698,123 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return createdExp.id;
   };
 
+  const realizeMockInstallment = async (mockId: string): Promise<string> => {
+    if (!activeHousehold || !user) throw new Error("No active household or user");
+    
+    // Parsear el ID: inst-mock-${installmentId}-${installmentNumber}
+    const match = mockId.match(/^inst-mock-(.+)-(\d+)$/);
+    if (!match) throw new Error("Invalid mock installment ID format");
+    
+    const installmentId = match[1];
+    const installmentNumber = parseInt(match[2], 10);
+    
+    // 1. Obtener la compra en cuotas (installment) desde la base de datos
+    const { data: inst } = await supabase
+      .from('installments')
+      .select('*')
+      .eq('id', installmentId)
+      .single();
+      
+    if (!inst) throw new Error("Installment not found");
+    
+    // 2. Determinar el año y mes correspondientes a esta cuota
+    const billingCycleStartDay = activeHousehold.billing_cycle_start_day;
+    const firstDebitPeriod = getFinancialPeriod(
+      new Date(inst.first_debit_year, inst.first_debit_month - 1, inst.first_debit_day || 10),
+      billingCycleStartDay
+    );
+    
+    let targetMonth = firstDebitPeriod.month + (installmentNumber - 1);
+    let targetYear = firstDebitPeriod.year;
+    while (targetMonth > 12) {
+      targetMonth -= 12;
+      targetYear += 1;
+    }
+    
+    // 3. Asegurar que el mes exista en la base de datos
+    let targetMonthRecord = monthsData.find(m => m.year === targetYear && m.month === targetMonth);
+    if (!targetMonthRecord) {
+      const isFuture = targetYear > currentPeriod.year || 
+        (targetYear === currentPeriod.year && targetMonth > currentPeriod.month);
+      const status = isFuture ? 'planning' : 'open';
+      
+      const { data: newMonth, error: createError } = await supabase
+        .from('months')
+        .insert({
+          household_id: activeHousehold.id,
+          year: targetYear,
+          month: targetMonth,
+          status
+        })
+        .select()
+        .single();
+        
+      if (createError || !newMonth) throw new Error("Error creating month for installment projection");
+      targetMonthRecord = newMonth;
+      setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+    }
+
+    if (!targetMonthRecord) throw new Error("Target month record not found");
+    
+    // 4. Comprobar si ya existe el gasto de esta cuota física en la base de datos
+    const { data: existingExps } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('month_id', targetMonthRecord.id)
+      .eq('installment_id', installmentId)
+      .eq('installment_number', installmentNumber);
+      
+    if (existingExps && existingExps.length > 0) {
+      return existingExps[0].id;
+    }
+    
+    // 5. Si no existe, crear la cuota física en la base de datos
+    const day = inst.first_debit_day || 10;
+    let expYear = targetMonthRecord.year;
+    let expMonth = targetMonthRecord.month;
+    if (day < billingCycleStartDay) {
+      expMonth += 1;
+      if (expMonth > 12) {
+        expMonth = 1;
+        expYear += 1;
+      }
+    }
+    const lastDayOfTargetMonth = new Date(expYear, expMonth, 0).getDate();
+    const targetDay = Math.min(day, lastDayOfTargetMonth);
+    const targetDateStr = `${expYear}-${String(expMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+    
+    // Obtener la categoría 'Cuotas' para el hogar
+    const cuotasCat = categories.find(c => c.name.toLowerCase() === 'cuotas');
+    const categoryId = cuotasCat ? cuotasCat.id : (categories[0]?.id || '');
+    
+    const { data: createdExp, error: createExpErr } = await supabase
+      .from('expenses')
+      .insert({
+        description: `${inst.description} (Cuota ${installmentNumber}/${inst.num_installments})`,
+        amount: Number(inst.amount_per_installment),
+        date: targetDateStr,
+        account: inst.account,
+        holder: inst.payment_type === 'credit_card' ? 'Tarjeta' : 'Cuenta',
+        category_id: categoryId,
+        is_planned: targetMonthRecord.status === 'planning',
+        notes: inst.notes,
+        is_recurring: false,
+        month_id: targetMonthRecord.id,
+        installment_id: inst.id,
+        installment_number: installmentNumber,
+        created_by: user.id
+      })
+      .select()
+      .single();
+      
+    if (createExpErr || !createdExp) {
+      console.error("Error creating physical copy of installment:", createExpErr);
+      throw new Error("Error materializing mock installment");
+    }
+    
+    return createdExp.id;
+  };
+
   const updateExpense = async (id: string, expense: Partial<Expense>, adjustmentNote?: string) => {
     if (!activeHousehold || !activeMonthRecord) return;
     console.log('[DEBUG updateExpense] Starting update for expense ID:', id, 'Payload:', expense);
@@ -1705,6 +1822,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       let targetId = id;
       if (id.startsWith('proj-exp-')) {
         targetId = await realizeProjectedExpense(id);
+      } else if (id.startsWith('inst-mock-')) {
+        targetId = await realizeMockInstallment(id);
       }
 
       // 1. Obtener detalles del gasto antes de actualizarlo para identificar clones futuros
@@ -1906,6 +2025,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       let targetId = id;
       if (id.startsWith('proj-exp-')) {
         targetId = await realizeProjectedExpense(id);
+      } else if (id.startsWith('inst-mock-')) {
+        targetId = await realizeMockInstallment(id);
       }
 
       // 1. Obtener detalles del gasto antes de borrarlo
