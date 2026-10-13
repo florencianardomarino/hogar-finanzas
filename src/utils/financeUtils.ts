@@ -1,4 +1,4 @@
-import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig } from '../types';
+import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation } from '../types';
 import { getFinancialPeriod } from './dateUtils';
 
 export interface CalculatedMonthData {
@@ -20,6 +20,28 @@ export interface CalculatedMonthData {
   // Saldos acumulados encadenados
   previousBalance: number;
   finalBalance: number;
+
+  // Asignaciones a cuentas de ahorro (se descuentan del fondo principal)
+  totalAllocated: number;
+  allocationsByAccount: Record<string, number>;
+
+  // Restablecimiento manual del saldo (ancla): solo en el mes ancla
+  isBalanceAnchor: boolean;
+  anchorAdjustment: number; // saldo manual - saldo que calculaba la app
+}
+
+/**
+ * Importe en euros de una asignación mensual a una cuenta de ahorro.
+ * Si es un porcentaje, se aplica sobre los ingresos totales del mes.
+ */
+export function getAllocationAmount(
+  allocation: Pick<SavingsAllocation, 'kind' | 'value'>,
+  totalIncomes: number
+): number {
+  const raw = allocation.kind === 'percent'
+    ? (totalIncomes * Number(allocation.value)) / 100
+    : Number(allocation.value);
+  return Math.round(raw * 100) / 100;
 }
 
 /**
@@ -33,7 +55,8 @@ export function calculateEncainedFinances(
   allUnplanned: UnplannedExpense[],
   installments: Installment[],
   savingsConfig: SavingsConfig | null,
-  billingCycleStartDay: number = 10
+  billingCycleStartDay: number = 10,
+  savingsAllocations: SavingsAllocation[] = []
 ): CalculatedMonthData[] {
   
   // 1. Saldo inicial base
@@ -57,12 +80,48 @@ export function calculateEncainedFinances(
     });
   }
 
+  allIncomes.forEach((inc) => {
+    if (inc.date) {
+      const p = getFinancialPeriod(inc.date, billingCycleStartDay);
+      if (p.year < startYear || (p.year === startYear && p.month < startMonth)) {
+        startYear = p.year;
+        startMonth = p.month;
+      }
+    }
+  });
+
+  allExpenses.forEach((exp) => {
+    if (exp.date) {
+      const p = getFinancialPeriod(exp.date, billingCycleStartDay);
+      if (p.year < startYear || (p.year === startYear && p.month < startMonth)) {
+        startYear = p.year;
+        startMonth = p.month;
+      }
+    }
+  });
+
   installments.forEach((inst) => {
     const instYear = inst.first_debit_year;
     const instMonth = inst.first_debit_month;
     if (instYear < startYear || (instYear === startYear && instMonth < startMonth)) {
       startYear = instYear;
       startMonth = instMonth;
+    }
+  });
+
+  if (savingsConfig?.anchor_year != null && savingsConfig?.anchor_month != null) {
+    const aYear = Number(savingsConfig.anchor_year);
+    const aMonth = Number(savingsConfig.anchor_month);
+    if (aYear < startYear || (aYear === startYear && aMonth < startMonth)) {
+      startYear = aYear;
+      startMonth = aMonth;
+    }
+  }
+
+  savingsAllocations.forEach((a) => {
+    if (a.year < startYear || (a.year === startYear && a.month < startMonth)) {
+      startYear = a.year;
+      startMonth = a.month;
     }
   });
 
@@ -126,11 +185,8 @@ export function calculateEncainedFinances(
     let monthExpenses = allExpenses.filter((e) => e.month_id === m.id);
     const monthUnplanned = allUnplanned.filter((u) => u.month_id === m.id);
 
-    // Si es un mes ficticio (mock) o un período de planificación futura, proyectamos los recurrentes del período calculado anterior
-    const todayPeriod = getFinancialPeriod(new Date(), billingCycleStartDay);
-    const isFuturePeriod = m.year > todayPeriod.year || (m.year === todayPeriod.year && m.month > todayPeriod.month);
-
-    if (results.length > 0 && (m.id.startsWith('mock-month-') || isFuturePeriod)) {
+    // Proyectar gastos e ingresos recurrentes del mes anterior si el mes actual no está cerrado
+    if (results.length > 0 && m.status !== 'closed') {
       const prevResult = results[results.length - 1];
       const cleanDesc = (d: string) => (d || '').replace(/\u200B/g, '').trim().toLowerCase();
 
@@ -158,11 +214,16 @@ export function calculateEncainedFinances(
           const targetDay = Math.min(day, lastDayOfTargetMonth);
           const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
 
+          const baseIncomeId = (i as { original_income_id?: string }).original_income_id || (i.id.startsWith('proj-inc-') ? i.id.replace(/^proj-inc-/, '').replace(/-\d+-\d+$/, '') : i.id);
+
           return {
             ...i,
-            id: `proj-inc-${i.id}-${m.year}-${m.month}`,
+            id: `proj-inc-${baseIncomeId}-${m.year}-${m.month}`,
+            original_income_id: baseIncomeId,
             month_id: m.id,
-            date: targetDateStr
+            date: targetDateStr,
+            is_estimated: true,
+            is_recurring: true
           };
         });
 
@@ -192,12 +253,16 @@ export function calculateEncainedFinances(
           const targetDay = Math.min(day, lastDayOfTargetMonth);
           const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
 
+          const baseExpenseId = (e as { original_expense_id?: string }).original_expense_id || (e.id.startsWith('proj-exp-') ? e.id.replace(/^proj-exp-/, '').replace(/-\d+-\d+$/, '') : e.id);
+
           return {
             ...e,
-            id: `proj-exp-${e.id}-${m.year}-${m.month}`,
+            id: `proj-exp-${baseExpenseId}-${m.year}-${m.month}`,
+            original_expense_id: baseExpenseId,
             month_id: m.id,
             date: targetDateStr,
-            is_reconciled: false
+            is_reconciled: false,
+            is_recurring: true
           };
         });
 
@@ -295,9 +360,34 @@ export function calculateEncainedFinances(
     // Ahorro neto del mes corriente
     const saving = totalIncomes - totalExpenses;
 
+    // Asignaciones del mes a las cuentas de ahorro (salen del fondo principal)
+    const allocationsByAccount: Record<string, number> = {};
+    let totalAllocated = 0;
+    savingsAllocations
+      .filter((a) => a.year === m.year && a.month === m.month)
+      .forEach((a) => {
+        const amount = getAllocationAmount(a, totalIncomes);
+        allocationsByAccount[a.savings_account_id] = (allocationsByAccount[a.savings_account_id] || 0) + amount;
+        totalAllocated += amount;
+      });
+
     // Ahorro acumulado encadenado
     const previousBalance = currentAccumulatedBalance;
-    const finalBalance = previousBalance + saving - totalUnplanned;
+    let finalBalance = previousBalance + saving - totalUnplanned - totalAllocated;
+
+    // Si este mes es el "ancla" (saldo restablecido manualmente), el saldo de cierre
+    // es el indicado por el usuario y los meses siguientes se encadenan desde él.
+    const isBalanceAnchor =
+      savingsConfig?.anchor_year != null &&
+      savingsConfig?.anchor_month != null &&
+      savingsConfig?.anchor_balance != null &&
+      Number(savingsConfig.anchor_year) === m.year &&
+      Number(savingsConfig.anchor_month) === m.month;
+    let anchorAdjustment = 0;
+    if (isBalanceAnchor) {
+      anchorAdjustment = Number(savingsConfig!.anchor_balance) - finalBalance;
+      finalBalance = Number(savingsConfig!.anchor_balance);
+    }
 
     // Propagar el saldo para el mes siguiente
     currentAccumulatedBalance = finalBalance;
@@ -315,7 +405,11 @@ export function calculateEncainedFinances(
       unplannedList: monthUnplanned,
       saving,
       previousBalance,
-      finalBalance
+      finalBalance,
+      totalAllocated,
+      allocationsByAccount,
+      isBalanceAnchor,
+      anchorAdjustment
     });
   });
 

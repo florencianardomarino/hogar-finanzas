@@ -1,19 +1,22 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { getPeriodLabel, arePeriodsEqual, toISODateString, formatCompactDate } from '../../utils/dateUtils';
-import { calculateEncainedFinances } from '../../utils/financeUtils';
+import { getPeriodLabel, toISODateString, formatCompactDate } from '../../utils/dateUtils';
+import { calculateEncainedFinances, CalculatedMonthData } from '../../utils/financeUtils';
 import { UnplannedExpense } from '../../types';
 import { Panel } from '../ui/Panel';
 import { ChipsSelector } from '../ui/ChipsSelector';
 import { 
-  PiggyBank, Sparkles, TrendingUp, ShieldAlert, Plus, Edit3, Trash2, Calendar, Landmark, User, AlertTriangle 
+  PiggyBank, TrendingUp, ShieldAlert, Plus, Edit3, Trash2, Calendar, Landmark, User,
+  RotateCcw, Undo2, Wallet
 } from 'lucide-react';
+import { ResetBalancePanel } from './ResetBalancePanel';
+import { SavingsAccountsSection } from './SavingsAccountsSection';
 
 interface SavingsScreenProps {
   onNavigate?: (tab: 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | 'summary' | 'settings') => void;
 }
 
-export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
+export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
   const { 
     monthsData, 
     allIncomes, 
@@ -27,8 +30,15 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
     selectedPeriod,
     addUnplannedExpense,
     deleteUnplannedExpense,
-    updateUnplannedExpense
+    updateUnplannedExpense,
+    savingsAllocations,
+    clearSavingsAnchor,
+    showToast
   } = useApp();
+
+  // Pestaña activa: fondo principal o cuentas de ahorro
+  const [view, setView] = useState<'fund' | 'accounts'>('fund');
+  const [isResetOpen, setIsResetOpen] = useState(false);
 
   // Estados para formularios y paneles
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -44,8 +54,37 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
+
+  // Ajuste manual vigente (saldo restablecido a un mes cerrado)
+  const hasAnchor =
+    savingsConfig?.anchor_year != null &&
+    savingsConfig?.anchor_month != null &&
+    savingsConfig?.anchor_balance != null;
+  // Si la columna no existe en la base de datos, falta ejecutar la migración SQL
+  const anchorSupported = !!savingsConfig && 'anchor_year' in savingsConfig;
+
+  const handleOpenReset = () => {
+    if (!anchorSupported) {
+      showToast('Falta ejecutar la migración SQL (migration_savings_accounts.sql) en Supabase', 'error');
+      return;
+    }
+    setIsResetOpen(true);
+  };
+
+  const handleClearAnchor = async () => {
+    if (!window.confirm(
+      'Vas a quitar el ajuste manual del saldo.\n\n' +
+      'El Fondo de Ahorro volverá a calcularse automáticamente desde el saldo inicial, ' +
+      'por lo que el número actual puede cambiar.\n\n¿Continuar?'
+    )) return;
+    try {
+      await clearSavingsAnchor();
+    } catch {
+      // El contexto ya muestra el aviso de error
+    }
+  };
 
   // Cargar titulares y cuentas dinámicas del hogar
   const currentHolders: string[] = activeHousehold?.holders || [
@@ -60,7 +99,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
     { id: '3', name: activeHousehold?.account_joint_name || 'Cuenta conjunta', type: 'bank_account', holder: 'Compartido' }
   ];
 
-  const currentAccounts: any[] = [...baseAccounts];
+  const currentAccounts: Array<{ id: string; name: string; type: string; holder: string }> = [...baseAccounts];
   if (!currentAccounts.some(acc => acc.type === 'cash' || acc.name.toLowerCase() === 'efectivo')) {
     currentAccounts.push({ id: 'cash-fallback', name: 'Efectivo', type: 'cash', holder: 'Compartido' });
   }
@@ -160,7 +199,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
   };
 
   // Renderizar un bloque mensual de 4 filas
-  const renderMonthBlock = (mData: any, isProjected: boolean) => {
+  const renderMonthBlock = (mData: CalculatedMonthData, isProjected: boolean) => {
     const isSelected = selectedPeriod && selectedPeriod.year === mData.year && selectedPeriod.month === mData.month;
 
     return (
@@ -197,6 +236,13 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
           </span>
         </div>
 
+        {mData.isBalanceAnchor && (
+          <div className="flex items-center gap-1.5 text-[10px] font-bold text-brand-amber bg-brand-amber/10 border border-brand-amber/30 rounded-xl px-2.5 py-1.5">
+            <RotateCcw size={10} />
+            Saldo ajustado manualmente ({Number(mData.anchorAdjustment) >= 0 ? '+' : ''}{Number(mData.anchorAdjustment).toFixed(2)}€)
+          </div>
+        )}
+
         {/* Estructura de 4 filas de cálculo */}
         <div className="flex flex-col gap-2.5 text-xs">
           {/* Fila 1: Saldo del mes anterior */}
@@ -221,6 +267,16 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
             </span>
           </div>
 
+          {/* Asignaciones a cuentas de ahorro (solo si hay) */}
+          {Number(mData.totalAllocated) > 0 && (
+            <div className="flex justify-between items-center font-bold">
+              <span className="text-lux-muted">Asignado a cuentas</span>
+              <span className="text-brand-indigo">
+                -{Number(mData.totalAllocated).toFixed(2)}€
+              </span>
+            </div>
+          )}
+
           {/* Fila 4: Total final */}
           <div className="flex justify-between items-center pt-2.5 border-t border-lux-border/20 text-sm font-extrabold text-lux-text">
             <span className="flex items-center gap-1">
@@ -238,6 +294,31 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
 
   return (
     <div className="px-4 py-5 safe-bottom-padding animate-fade-in">
+      {/* SELECTOR DE VISTA */}
+      <div className="flex gap-1.5 p-1 mb-6 rounded-2xl bg-lux-bg/60 border border-lux-border/40">
+        <button
+          onClick={() => setView('fund')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+            view === 'fund' ? 'bg-lux-accent/15 text-lux-accent shadow' : 'text-lux-muted hover:text-lux-text'
+          }`}
+        >
+          <PiggyBank size={13} />
+          Fondo principal
+        </button>
+        <button
+          onClick={() => setView('accounts')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+            view === 'accounts' ? 'bg-lux-accent/15 text-lux-accent shadow' : 'text-lux-muted hover:text-lux-text'
+          }`}
+        >
+          <Wallet size={13} />
+          Cuentas de ahorro
+        </button>
+      </div>
+
+      {view === 'accounts' && <SavingsAccountsSection />}
+
+      {view === 'fund' && (<>
       {/* 1. SECTOR DESTACADO INICIAL */}
       <div className="glass-panel p-6 rounded-3xl premium-card flex flex-col items-center justify-center text-center mb-8 relative overflow-hidden">
         <div className="w-14 h-14 bg-gradient-to-tr from-brand-emerald to-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-brand-emerald/20 mb-4 animate-bounce-slow">
@@ -248,8 +329,44 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
           {Number(totalRealSavings).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
         </span>
         <p className="text-[10px] text-lux-muted mt-2 font-medium max-w-xs">
-          Suma acumulada histórica desde el saldo inicial de partida ({Number(savingsConfig?.initial_balance || 0).toFixed(0)}€) hasta el mes de hoy.
+          {hasAnchor ? (
+            <>
+              Calculado desde el ajuste manual de {getPeriodLabel(Number(savingsConfig?.anchor_year), Number(savingsConfig?.anchor_month))} ({Number(savingsConfig?.anchor_balance).toFixed(2)}€) hasta el mes de hoy.
+            </>
+          ) : (
+            <>
+              Suma acumulada histórica desde el saldo inicial de partida ({Number(savingsConfig?.initial_balance || 0).toFixed(0)}€) hasta el mes de hoy.
+            </>
+          )}
         </p>
+
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
+          <button
+            onClick={handleOpenReset}
+            className="bg-lux-bg/60 border border-lux-border/60 hover:border-brand-amber text-lux-text font-bold px-3.5 py-2 rounded-2xl transition-all text-[11px] flex items-center gap-1.5 cursor-pointer active:scale-[0.98]"
+          >
+            <RotateCcw size={12} />
+            Restablecer saldo
+          </button>
+          {hasAnchor && (
+            <button
+              onClick={handleClearAnchor}
+              className="bg-transparent border border-lux-border/40 hover:border-brand-rose text-lux-muted hover:text-brand-rose font-bold px-3.5 py-2 rounded-2xl transition-all text-[11px] flex items-center gap-1.5 cursor-pointer active:scale-[0.98]"
+            >
+              <Undo2 size={12} />
+              Quitar ajuste
+            </button>
+          )}
+        </div>
+
+        {hasAnchor && savingsConfig?.anchor_set_at && (
+          <p className="text-[10px] text-brand-amber mt-3 font-semibold max-w-xs">
+            Ajuste manual aplicado el {new Date(savingsConfig.anchor_set_at).toLocaleDateString('es-ES')}
+            {savingsConfig.anchor_previous_computed != null && (
+              <> · la app calculaba {Number(savingsConfig.anchor_previous_computed).toFixed(2)}€</>
+            )}
+          </p>
+        )}
       </div>
 
       {/* 2. TABLA ENCADENADA MES A MES (DOS COLUMNAS EN DESKTOP) */}
@@ -389,6 +506,10 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = ({ onNavigate }) => {
           )}
         </div>
       )}
+      </>)}
+
+      {/* PANEL RESTABLECER SALDO DE AHORROS */}
+      <ResetBalancePanel isOpen={isResetOpen} onClose={() => setIsResetOpen(false)} />
 
       {/* PANEL REGISTRAR GASTO EXTRAORDINARIO */}
       <Panel 

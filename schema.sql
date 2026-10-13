@@ -346,3 +346,9 @@ alter publication supabase_realtime add table public.unplanned_expenses;
 alter publication supabase_realtime add table public.household_members;
 alter publication supabase_realtime add table public.expense_categories;
 alter publication supabase_realtime add table public.savings_config;
+
+-- =====================================================================
+-- NOTA: Tras ejecutar este esquema en una instalación nueva, ejecuta también
+-- el archivo `migration_savings_accounts.sql` (restablecer saldo de ahorros +
+-- cuentas de ahorro).
+-- =====================================================================

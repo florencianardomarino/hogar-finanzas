@@ -2,9 +2,25 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { supabase } from '../lib/supabase';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
-  Income, Expense, Installment, UnplannedExpense, SavingsConfig
+  Income, Expense, Installment, UnplannedExpense, SavingsConfig,
+  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind
 } from '../types';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
+
+// Mensaje cuando faltan las tablas/columnas de la migración de ahorros en Supabase
+const SAVINGS_MIGRATION_MESSAGE =
+  'Falta ejecutar la migración SQL (migration_savings_accounts.sql) en Supabase';
+
+// Detecta errores de PostgREST/Postgres por tabla o columna inexistente
+const isMissingSchemaError = (err: any): boolean => {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const msg = String(err.message || '').toLowerCase();
+  return (
+    code === '42P01' || code === '42703' || code === 'PGRST204' || code === 'PGRST205' ||
+    msg.includes('does not exist') || msg.includes('schema cache')
+  );
+};
 
 // Interfaz para Toasts
 export interface Toast {
@@ -57,6 +73,10 @@ interface AppContextType {
   unplannedExpenses: UnplannedExpense[];
   installments: Installment[];
   savingsConfig: SavingsConfig | null;
+  savingsAccounts: SavingsAccount[];
+  savingsAllocations: SavingsAllocation[];
+  savingsAccountExpenses: SavingsAccountExpense[];
+  savingsAccountsReady: boolean; // false si falta ejecutar la migración SQL
   loadingData: boolean;
   
   // Operaciones Financieras
@@ -77,6 +97,18 @@ interface AppContextType {
   deleteUnplannedExpense: (id: string) => Promise<void>;
   
   updateSavingsConfig: (balance: number) => Promise<void>;
+  resetSavingsBalance: (year: number, month: number, balance: number, previousComputed: number) => Promise<void>;
+  clearSavingsAnchor: () => Promise<void>;
+
+  // Cuentas de ahorro (ej: Inversión, Cancelar deudas)
+  addSavingsAccount: (name: string, color: string) => Promise<void>;
+  updateSavingsAccount: (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => Promise<void>;
+  deleteSavingsAccount: (id: string) => Promise<void>;
+  setSavingsAllocation: (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => Promise<void>;
+  deleteSavingsAllocation: (id: string) => Promise<void>;
+  addSavingsAccountExpense: (expense: Pick<SavingsAccountExpense, 'savings_account_id' | 'description' | 'amount' | 'date' | 'notes'>) => Promise<void>;
+  updateSavingsAccountExpense: (id: string, patch: Partial<Pick<SavingsAccountExpense, 'description' | 'amount' | 'date' | 'notes'>>) => Promise<void>;
+  deleteSavingsAccountExpense: (id: string) => Promise<void>;
   
   // Interfaz de Usuario (Tema & Toasts)
   theme: 'dark' | 'light';
@@ -129,6 +161,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [unplannedExpenses, setUnplannedExpenses] = useState<UnplannedExpense[]>([]);
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [savingsConfig, setSavingsConfig] = useState<SavingsConfig | null>(null);
+  const [savingsAccounts, setSavingsAccounts] = useState<SavingsAccount[]>([]);
+  const [savingsAllocations, setSavingsAllocations] = useState<SavingsAllocation[]>([]);
+  const [savingsAccountExpenses, setSavingsAccountExpenses] = useState<SavingsAccountExpense[]>([]);
+  const [savingsAccountsReady, setSavingsAccountsReady] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
 
   // Toasts & Tema
@@ -1120,6 +1156,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUnplannedExpenses(enrichedUnps as unknown as UnplannedExpense[]);
       }
 
+      // 7. Cargar cuentas de ahorro, asignaciones mensuales y sus gastos (opcional: requiere migración)
+      const { data: sAccs, error: sAccsError } = await supabase
+        .from('savings_accounts')
+        .select('*')
+        .eq('household_id', activeHousehold.id)
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true });
+
+      if (sAccsError) {
+        if (isMissingSchemaError(sAccsError)) {
+          setSavingsAccountsReady(false);
+          setSavingsAccounts([]);
+          setSavingsAllocations([]);
+          setSavingsAccountExpenses([]);
+        }
+      } else {
+        setSavingsAccountsReady(true);
+        setSavingsAccounts((sAccs || []) as SavingsAccount[]);
+
+        const { data: sAllocs, error: sAllocsError } = await supabase
+          .from('savings_allocations')
+          .select('*')
+          .eq('household_id', activeHousehold.id);
+        if (!sAllocsError) setSavingsAllocations((sAllocs || []) as SavingsAllocation[]);
+
+        const { data: sExps, error: sExpsError } = await supabase
+          .from('savings_account_expenses')
+          .select('*')
+          .eq('household_id', activeHousehold.id)
+          .order('date', { ascending: false });
+        if (!sExpsError) setSavingsAccountExpenses((sExps || []) as SavingsAccountExpense[]);
+      }
+
     } catch (e) {
       console.error('Error loading financial data', e);
       showToast('Error al cargar datos financieros', 'error');
@@ -1137,6 +1206,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setUnplannedExpenses([]);
       setInstallments([]);
       setSavingsConfig(null);
+      setSavingsAccounts([]);
+      setSavingsAllocations([]);
+      setSavingsAccountExpenses([]);
     }
   }, [activeHousehold, activeMonthRecord]);
 
@@ -1181,13 +1253,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'postgres_changes',
         { event: '*', schema: 'public', table: 'months', filter: `household_id=eq.${activeHousehold.id}` },
         () => loadPeriodRecord()
-      )
-      .subscribe();
+      );
+
+    // Las tablas de cuentas de ahorro solo se escuchan si la migración ya está aplicada
+    if (savingsAccountsReady) {
+      channel
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'savings_accounts', filter: `household_id=eq.${activeHousehold.id}` },
+          () => loadFinancialData()
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'savings_allocations', filter: `household_id=eq.${activeHousehold.id}` },
+          () => loadFinancialData()
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'savings_account_expenses', filter: `household_id=eq.${activeHousehold.id}` },
+          () => loadFinancialData()
+        );
+    }
+
+    channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeHousehold, activeMonthRecord]);
+  }, [activeHousehold, activeMonthRecord, savingsAccountsReady]);
 
   const getOrCreateMonthIdForDate = async (dateStr: string): Promise<string> => {
     if (!activeHousehold) throw new Error("No active household");
@@ -1278,32 +1371,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
             if (filteredFutureMonths.length > 0) {
               const startDay = activeHousehold.billing_cycle_start_day;
-              const copiesToInsert = filteredFutureMonths.map(m => {
-                const prevDate = new Date(income.date);
-                const day = prevDate.getUTCDate();
-                
-                let targetYear = m.year;
-                let targetMonth = m.month;
-                if (day < startDay) {
-                  targetMonth += 1;
-                  if (targetMonth > 12) {
-                    targetMonth = 1;
-                    targetYear += 1;
+
+              // Evitar duplicar si ya existe un ingreso con la misma descripción en ese mes futuro
+              const { data: existingFutureIncomes } = await supabase
+                .from('incomes')
+                .select('month_id, description')
+                .in('month_id', filteredFutureMonths.map(m => m.id));
+
+              const cleanDesc = (d: string) => (d || '').replace(/\u200B/g, '').trim().toLowerCase();
+              const newCleanDesc = cleanDesc(dbPayload.description);
+
+              const existingMonthIds = new Set(
+                existingFutureIncomes
+                  ?.filter(ei => cleanDesc(ei.description) === newCleanDesc)
+                  .map(ei => ei.month_id) || []
+              );
+
+              const monthsToPropagate = filteredFutureMonths.filter(m => !existingMonthIds.has(m.id));
+
+              if (monthsToPropagate.length > 0) {
+                const copiesToInsert = monthsToPropagate.map(m => {
+                  const prevDate = new Date(income.date);
+                  const day = prevDate.getUTCDate();
+                  
+                  let targetYear = m.year;
+                  let targetMonth = m.month;
+                  if (day < startDay) {
+                    targetMonth += 1;
+                    if (targetMonth > 12) {
+                      targetMonth = 1;
+                      targetYear += 1;
+                    }
                   }
-                }
-                const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
-                const targetDay = Math.min(day, lastDayOfTargetMonth);
-                const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+                  const lastDayOfTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+                  const targetDay = Math.min(day, lastDayOfTargetMonth);
+                  const targetDateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
 
-                return {
-                  ...dbPayload,
-                  month_id: m.id,
-                  created_by: user.id,
-                  date: targetDateStr
-                };
-              });
+                  return {
+                    ...dbPayload,
+                    month_id: m.id,
+                    created_by: user.id,
+                    date: targetDateStr
+                  };
+                });
 
-              await supabase.from('incomes').insert(copiesToInsert);
+                await supabase.from('incomes').insert(copiesToInsert);
+              }
             }
           }
         } catch (propagateErr) {
@@ -1319,14 +1432,123 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const realizeProjectedIncome = async (projectedId: string): Promise<string> => {
+    if (!activeHousehold || !user) throw new Error("No active household or user");
+    
+    const match = projectedId.match(/^proj-inc-(.+)-(\d+)-(\d+)$/);
+    if (!match) throw new Error("Invalid projected ID format");
+    
+    let originalId = match[1];
+    while (originalId.startsWith('proj-inc-')) {
+      originalId = originalId.replace(/^proj-inc-/, '').replace(/-\d+-\d+$/, '');
+    }
+    const targetYear = parseInt(match[2], 10);
+    const targetMonth = parseInt(match[3], 10);
+    
+    // 1. Asegurar que el mes de destino exista en la base de datos
+    let targetMonthRecord = monthsData.find(m => m.year === targetYear && m.month === targetMonth);
+    if (!targetMonthRecord) {
+      const isFuture = targetYear > currentPeriod.year || 
+        (targetYear === currentPeriod.year && targetMonth > currentPeriod.month);
+      const status = isFuture ? 'planning' : 'open';
+      
+      const { data: newMonth, error: createError } = await supabase
+        .from('months')
+        .insert({
+          household_id: activeHousehold.id,
+          year: targetYear,
+          month: targetMonth,
+          status
+        })
+        .select()
+        .single();
+        
+      if (createError || !newMonth) throw new Error("Error creating month for projection");
+      targetMonthRecord = newMonth;
+      setMonthsData((prev) => [...prev, newMonth].sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month)));
+    }
+    
+    if (!targetMonthRecord) throw new Error("Target month record not found");
+    
+    // 2. Comprobar si el ingreso ya existe físicamente en este mes
+    const { data: existingIncs } = await supabase
+      .from('incomes')
+      .select('*')
+      .eq('month_id', targetMonthRecord.id);
+      
+    const { data: originalIncome } = await supabase
+      .from('incomes')
+      .select('*')
+      .eq('id', originalId)
+      .single();
+      
+    if (!originalIncome) throw new Error("Original income not found");
+    
+    const cleanDesc = (d: string) => (d || '').replace(/\u200B/g, '').trim().toLowerCase();
+    const targetCleanDesc = cleanDesc(originalIncome.description);
+    
+    const matchingCopiedInc = existingIncs?.find(i => 
+      cleanDesc(i.description) === targetCleanDesc
+    );
+    
+    if (matchingCopiedInc) {
+      return matchingCopiedInc.id;
+    }
+    
+    // 3. Si no existe, creamos la copia física de la proyección en el mes de destino
+    const startDay = activeHousehold.billing_cycle_start_day;
+    const prevDate = new Date(originalIncome.date);
+    const day = prevDate.getUTCDate();
+    
+    let yearVal = targetMonthRecord.year;
+    let monthVal = targetMonthRecord.month;
+    if (day < startDay) {
+      monthVal += 1;
+      if (monthVal > 12) {
+        monthVal = 1;
+        yearVal += 1;
+      }
+    }
+    const lastDayOfTargetMonth = new Date(yearVal, monthVal, 0).getDate();
+    const targetDay = Math.min(day, lastDayOfTargetMonth);
+    const targetDateStr = `${yearVal}-${String(monthVal).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+    
+    const { data: createdInc, error: createIncErr } = await supabase
+      .from('incomes')
+      .insert({
+        description: originalIncome.description,
+        amount: originalIncome.amount,
+        date: targetDateStr,
+        account: originalIncome.account,
+        category: originalIncome.category,
+        is_estimated: targetMonthRecord.status === 'planning',
+        month_id: targetMonthRecord.id,
+        created_by: user.id
+      })
+      .select()
+      .single();
+      
+    if (createIncErr || !createdInc) {
+      console.error("Error creating physical copy of projected income:", createIncErr);
+      throw new Error("Error materializing projected income");
+    }
+    
+    return createdInc.id;
+  };
+
   const updateIncome = async (id: string, income: Partial<Income>, adjustmentNote?: string) => {
     if (!activeHousehold || !activeMonthRecord) return;
     try {
+      let targetId = id;
+      if (id.startsWith('proj-inc-')) {
+        targetId = await realizeProjectedIncome(id);
+      }
+
       // 1. Obtener detalles del ingreso antes de actualizarlo
       const { data: targetIncome } = await supabase
         .from('incomes')
         .select('*')
-        .eq('id', id)
+        .eq('id', targetId)
         .single();
 
       if (!targetIncome) throw new Error('Ingreso no encontrado');
@@ -1444,7 +1666,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { error } = await supabase
         .from('incomes')
         .update(payload)
-        .eq('id', id);
+        .eq('id', targetId);
 
       if (error) throw error;
       showToast('Ingreso actualizado con éxito', 'success');
@@ -1459,11 +1681,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteIncome = async (id: string, deleteFuture = false) => {
     if (!activeHousehold || !activeMonthRecord) return;
     try {
+      let targetId = id;
+      if (id.startsWith('proj-inc-')) {
+        targetId = await realizeProjectedIncome(id);
+      }
+
       // 1. Obtener detalles del ingreso antes de borrarlo
       const { data: targetIncome } = await supabase
         .from('incomes')
         .select('*')
-        .eq('id', id)
+        .eq('id', targetId)
         .single();
 
       if (!targetIncome) throw new Error('Ingreso no encontrado');
@@ -1472,7 +1699,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { error } = await supabase
         .from('incomes')
         .delete()
-        .eq('id', id);
+        .eq('id', targetId);
 
       if (error) throw error;
 
@@ -1598,7 +1825,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const match = projectedId.match(/^proj-exp-(.+)-(\d+)-(\d+)$/);
     if (!match) throw new Error("Invalid projected ID format");
     
-    const originalId = match[1];
+    let originalId = match[1];
+    while (originalId.startsWith('proj-exp-')) {
+      originalId = originalId.replace(/^proj-exp-/, '').replace(/-\d+-\d+$/, '');
+    }
     const targetYear = parseInt(match[2], 10);
     const targetMonth = parseInt(match[3], 10);
     
@@ -2252,6 +2482,212 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // -------------------------------------------------------------------
+  // RESTABLECER SALDO DEL FONDO DE AHORRO (ANCLA A UN MES CERRADO)
+  // -------------------------------------------------------------------
+  const resetSavingsBalance = async (year: number, month: number, balance: number, previousComputed: number) => {
+    if (!activeHousehold) return;
+    try {
+      const { error } = await supabase
+        .from('savings_config')
+        .upsert({
+          household_id: activeHousehold.id,
+          initial_balance: savingsConfig?.initial_balance ?? 0,
+          anchor_year: year,
+          anchor_month: month,
+          anchor_balance: balance,
+          anchor_previous_computed: previousComputed,
+          anchor_set_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+      showToast('Saldo de ahorros restablecido correctamente', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      showToast(isMissingSchemaError(e) ? SAVINGS_MIGRATION_MESSAGE : 'Error al restablecer el saldo de ahorros', 'error');
+      throw e;
+    }
+  };
+
+  const clearSavingsAnchor = async () => {
+    if (!activeHousehold) return;
+    try {
+      const { error } = await supabase
+        .from('savings_config')
+        .update({
+          anchor_year: null,
+          anchor_month: null,
+          anchor_balance: null,
+          anchor_previous_computed: null,
+          anchor_set_at: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('household_id', activeHousehold.id);
+
+      if (error) throw error;
+      showToast('Ajuste manual quitado. El saldo vuelve a calcularse automáticamente.', 'info');
+      await loadFinancialData();
+    } catch (e) {
+      showToast(isMissingSchemaError(e) ? SAVINGS_MIGRATION_MESSAGE : 'Error al quitar el ajuste manual', 'error');
+      throw e;
+    }
+  };
+
+  // -------------------------------------------------------------------
+  // CUENTAS DE AHORRO (Inversión, Cancelar deudas, ...)
+  // -------------------------------------------------------------------
+  const savingsAccountsError = (e: any, fallback: string) => {
+    showToast(isMissingSchemaError(e) ? SAVINGS_MIGRATION_MESSAGE : fallback, 'error');
+  };
+
+  const addSavingsAccount = async (name: string, color: string) => {
+    if (!activeHousehold || !user) return;
+    try {
+      const { error } = await supabase
+        .from('savings_accounts')
+        .insert({
+          household_id: activeHousehold.id,
+          name: name.trim(),
+          color,
+          sort_order: savingsAccounts.length,
+          created_by: user.id
+        });
+      if (error) throw error;
+      showToast('Cuenta de ahorro creada', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al crear la cuenta de ahorro');
+      throw e;
+    }
+  };
+
+  const updateSavingsAccount = async (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => {
+    try {
+      const { error } = await supabase
+        .from('savings_accounts')
+        .update(patch)
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Cuenta de ahorro actualizada', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al actualizar la cuenta de ahorro');
+      throw e;
+    }
+  };
+
+  const deleteSavingsAccount = async (id: string) => {
+    try {
+      // Las asignaciones y gastos de la cuenta se eliminan en cascada
+      const { error } = await supabase
+        .from('savings_accounts')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Cuenta de ahorro eliminada', 'info');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al eliminar la cuenta de ahorro');
+      throw e;
+    }
+  };
+
+  const setSavingsAllocation = async (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => {
+    if (!activeHousehold || !user) return;
+    try {
+      const { error } = await supabase
+        .from('savings_allocations')
+        .upsert(
+          {
+            household_id: activeHousehold.id,
+            savings_account_id: accountId,
+            year,
+            month,
+            kind,
+            value,
+            created_by: user.id
+          },
+          { onConflict: 'savings_account_id,year,month' }
+        );
+      if (error) throw error;
+      showToast('Asignación del mes guardada', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al guardar la asignación');
+      throw e;
+    }
+  };
+
+  const deleteSavingsAllocation = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('savings_allocations')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Asignación eliminada. Ese importe vuelve al fondo principal.', 'info');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al eliminar la asignación');
+      throw e;
+    }
+  };
+
+  const addSavingsAccountExpense = async (
+    expense: Pick<SavingsAccountExpense, 'savings_account_id' | 'description' | 'amount' | 'date' | 'notes'>
+  ) => {
+    if (!activeHousehold || !user) return;
+    try {
+      const { error } = await supabase
+        .from('savings_account_expenses')
+        .insert({
+          ...expense,
+          household_id: activeHousehold.id,
+          created_by: user.id
+        });
+      if (error) throw error;
+      showToast('Gasto registrado en la cuenta de ahorro', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al registrar el gasto');
+      throw e;
+    }
+  };
+
+  const updateSavingsAccountExpense = async (
+    id: string,
+    patch: Partial<Pick<SavingsAccountExpense, 'description' | 'amount' | 'date' | 'notes'>>
+  ) => {
+    try {
+      const { error } = await supabase
+        .from('savings_account_expenses')
+        .update(patch)
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Gasto actualizado', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al actualizar el gasto');
+      throw e;
+    }
+  };
+
+  const deleteSavingsAccountExpense = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('savings_account_expenses')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      showToast('Gasto eliminado', 'info');
+      await loadFinancialData();
+    } catch (e) {
+      savingsAccountsError(e, 'Error al eliminar el gasto');
+      throw e;
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -2292,6 +2728,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         unplannedExpenses,
         installments,
         savingsConfig,
+        savingsAccounts,
+        savingsAllocations,
+        savingsAccountExpenses,
+        savingsAccountsReady,
         loadingData,
         
         addIncome,
@@ -2307,6 +2747,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateUnplannedExpense,
         deleteUnplannedExpense,
         updateSavingsConfig,
+        resetSavingsBalance,
+        clearSavingsAnchor,
+        addSavingsAccount,
+        updateSavingsAccount,
+        deleteSavingsAccount,
+        setSavingsAllocation,
+        deleteSavingsAllocation,
+        addSavingsAccountExpense,
+        updateSavingsAccountExpense,
+        deleteSavingsAccountExpense,
         
         theme,
         toggleTheme,

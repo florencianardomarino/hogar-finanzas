@@ -8,7 +8,7 @@ import { Panel } from '../ui/Panel';
 export const IncomesScreen: React.FC = () => {
   const { 
     incomes, deleteIncome, updateIncome, addIncome, activeMonthRecord, selectedPeriod, showToast, activeHousehold,
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, savingsAllocations
   } = useApp();
 
   // Cargar cuentas dinámicas del hogar con fallbacks seguros
@@ -113,7 +113,7 @@ export const IncomesScreen: React.FC = () => {
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10
+    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
 
   // Obtener los datos del período seleccionado actual
@@ -219,7 +219,7 @@ export const IncomesScreen: React.FC = () => {
                   +{Number(inc.amount).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
                 </span>
                 
-                {activeMonthRecord?.status !== 'closed' && !inc.id.startsWith('proj-inc-') && (
+                {activeMonthRecord?.status !== 'closed' && (
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => handleEditClick(inc)}

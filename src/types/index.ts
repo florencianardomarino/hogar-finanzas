@@ -128,6 +128,48 @@ export interface SavingsConfig {
   household_id: string;
   initial_balance: number;
   updated_at: string;
+  // Ancla de saldo: saldo real al cierre de un mes concreto (restablecimiento manual)
+  anchor_year?: number | null;
+  anchor_month?: number | null;
+  anchor_balance?: number | null;
+  anchor_previous_computed?: number | null;
+  anchor_set_at?: string | null;
+}
+
+export interface SavingsAccount {
+  id: string;
+  household_id: string;
+  name: string;
+  color: string;
+  sort_order: number;
+  created_by: string | null;
+  created_at: string;
+}
+
+export type AllocationKind = 'percent' | 'amount';
+
+export interface SavingsAllocation {
+  id: string;
+  household_id: string;
+  savings_account_id: string;
+  year: number;
+  month: number;
+  kind: AllocationKind;
+  value: number;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface SavingsAccountExpense {
+  id: string;
+  household_id: string;
+  savings_account_id: string;
+  description: string;
+  amount: number;
+  date: string;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
 }
 
 // Tipo compuesto para la visualización del resumen mensual
