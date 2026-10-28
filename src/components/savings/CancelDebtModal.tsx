@@ -70,7 +70,7 @@ const CancelDebtForm: React.FC<{
     allExpenses,
     monthsData,
     allIncomes,
-    unplannedExpenses,
+    allUnplannedExpenses,
     savingsConfig,
     currentPeriod,
     activeHousehold,
@@ -95,13 +95,13 @@ const CancelDebtForm: React.FC<{
         monthsData,
         allIncomes,
         allExpenses,
-        unplannedExpenses,
+        allUnplannedExpenses,
         installments,
         savingsConfig,
         billingDay,
         savingsAllocations
       ),
-    [monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]
+    [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]
   );
 
   const isUpToCurrent = (year: number, month: number) =>
@@ -353,14 +353,9 @@ const CancelDebtForm: React.FC<{
         } else if (itemData.type === 'expense') {
           const exp: Expense = itemData.item;
           if (paymentMode === 'full') {
-            const CHAR_EXPLICIT_DEBITED = '\u200C';
-            const cleanDesc = (exp.description || '')
-              .replace(/\u200C/g, '')
-              .replace(/\u200D/g, '');
-
             await updateExpense(exp.id, {
               amount: 0,
-              description: cleanDesc + CHAR_EXPLICIT_DEBITED,
+              reconciled: true,
               notes: (exp.notes ? `${exp.notes} · ` : '') +
                 `Cancelado totalmente con ahorro (${currentAccount.name}) el ${paymentDate} (Importe cubierto: ${fmt(exp.amount)})`
             });

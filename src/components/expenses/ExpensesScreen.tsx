@@ -10,7 +10,7 @@ import {
 
 export const ExpensesScreen: React.FC = () => {
   const {
-    monthsData, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, installments, savingsConfig, savingsAllocations,
+    monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations,
     deleteExpense, updateExpense, addExpense, activeMonthRecord, selectedPeriod, categories, showToast,
     activeHousehold
   } = useApp();
@@ -74,27 +74,12 @@ export const ExpensesScreen: React.FC = () => {
   // Estado para el filtro de debitados (todos, pendientes, debitados)
   const [debitFilter, setDebitFilter] = useState<'all' | 'pending' | 'debited'>('all');
 
-  const CHAR_EXPLICIT_DEBITED = '\u200C';
-  const CHAR_EXPLICIT_PENDING = '\u200D';
-
   const handleToggleReconciled = async (exp: any, e: React.MouseEvent) => {
     e.stopPropagation(); // Evitar abrir modal de detalle
-    
-    const cleanDesc = exp.description
-      .replace(/\u200C/g, '')
-      .replace(/\u200D/g, '');
-
-    let newDesc = cleanDesc;
-
-    if (exp.is_reconciled) {
-      newDesc = cleanDesc + CHAR_EXPLICIT_PENDING;
-    } else {
-      newDesc = cleanDesc + CHAR_EXPLICIT_DEBITED;
-    }
 
     try {
       await updateExpense(exp.id, {
-        description: newDesc
+        reconciled: !exp.is_reconciled
       });
       showToast(exp.is_reconciled ? 'Gasto marcado como pendiente' : 'Gasto marcado como debitado', 'success');
     } catch (err) {
@@ -124,7 +109,7 @@ export const ExpensesScreen: React.FC = () => {
   // CÁLCULO DE DATOS FINANCIEROS INYECTADOS
   // -------------------------------------------------------------------
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
 
   const currentPeriodData = calculatedMonths.find(

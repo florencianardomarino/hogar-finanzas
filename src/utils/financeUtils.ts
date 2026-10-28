@@ -1,5 +1,6 @@
 import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation } from '../types';
 import { getFinancialPeriod } from './dateUtils';
+import { isSameSeries, getDayOfMonth } from './recurrence';
 
 export interface CalculatedMonthData {
   monthId: string;
@@ -24,6 +25,11 @@ export interface CalculatedMonthData {
   // Asignaciones a cuentas de ahorro (se descuentan del fondo principal)
   totalAllocated: number;
   allocationsByAccount: Record<string, number>;
+
+  // Mes cerrado con saldo congelado: finalBalance es el saldo guardado al cerrar, no el recalculado
+  isFrozen: boolean;
+  // Diferencia entre el saldo recalculado hoy y el congelado (efecto neto de ajustes posteriores al cierre)
+  closingDrift: number;
 
   // Restablecimiento manual del saldo (ancla): solo en el mes ancla
   isBalanceAnchor: boolean;
@@ -188,18 +194,15 @@ export function calculateEncainedFinances(
     // Proyectar gastos e ingresos recurrentes del mes anterior si el mes actual no está cerrado
     if (results.length > 0 && m.status !== 'closed') {
       const prevResult = results[results.length - 1];
-      const cleanDesc = (d: string) => (d || '').replace(/\u200B/g, '').trim().toLowerCase();
 
       // Proyectar ingresos recurrentes del mes anterior si no existen ya en el mes actual
       const projectedIncomes = prevResult.incomesList
         .filter((i) => i.is_recurring)
         .filter((i) => {
-          const cleanedI = cleanDesc(i.description);
-          return !monthIncomes.some((mi) => cleanDesc(mi.description) === cleanedI);
+          return !monthIncomes.some((mi) => isSameSeries(mi, i));
         })
         .map((i) => {
-          const prevDate = new Date(i.date);
-          const day = prevDate.getUTCDate() || 10;
+          const day = i.projection_day ?? getDayOfMonth(i.date) ?? 10;
           
           let targetYear = m.year;
           let targetMonth = m.month;
@@ -222,6 +225,7 @@ export function calculateEncainedFinances(
             original_income_id: baseIncomeId,
             month_id: m.id,
             date: targetDateStr,
+            projection_day: day,
             is_estimated: true,
             is_recurring: true
           };
@@ -233,12 +237,10 @@ export function calculateEncainedFinances(
       const projectedExpenses = prevResult.expensesList
         .filter((e) => e.is_recurring && !e.installment_id)
         .filter((e) => {
-          const cleanedE = cleanDesc(e.description);
-          return !monthExpenses.some((me) => cleanDesc(me.description) === cleanedE);
+          return !monthExpenses.some((me) => isSameSeries(me, e));
         })
         .map((e) => {
-          const prevDate = new Date(e.date);
-          const day = prevDate.getUTCDate() || 10;
+          const day = e.projection_day ?? getDayOfMonth(e.date) ?? 10;
           
           let targetYear = m.year;
           let targetMonth = m.month;
@@ -261,6 +263,7 @@ export function calculateEncainedFinances(
             original_expense_id: baseExpenseId,
             month_id: m.id,
             date: targetDateStr,
+            projection_day: day,
             is_reconciled: false,
             is_recurring: true
           };
@@ -375,6 +378,15 @@ export function calculateEncainedFinances(
     const previousBalance = currentAccumulatedBalance;
     let finalBalance = previousBalance + saving - totalUnplanned - totalAllocated;
 
+    // Un mes cerrado con saldo guardado queda congelado: los meses siguientes se encadenan desde
+    // ese saldo aunque se hayan hecho ajustes posteriores al cierre.
+    const isFrozen = m.status === 'closed' && m.closing_balance != null;
+    let closingDrift = 0;
+    if (isFrozen) {
+      closingDrift = Math.round((finalBalance - Number(m.closing_balance)) * 100) / 100;
+      finalBalance = Number(m.closing_balance);
+    }
+
     // Si este mes es el "ancla" (saldo restablecido manualmente), el saldo de cierre
     // es el indicado por el usuario y los meses siguientes se encadenan desde él.
     const isBalanceAnchor =
@@ -408,6 +420,8 @@ export function calculateEncainedFinances(
       finalBalance,
       totalAllocated,
       allocationsByAccount,
+      isFrozen,
+      closingDrift,
       isBalanceAnchor,
       anchorAdjustment
     });

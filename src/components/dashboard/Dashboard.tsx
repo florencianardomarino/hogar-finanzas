@@ -19,7 +19,7 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const {
     activeHousehold, userRole, currentPeriod, selectedPeriod, setSelectedPeriod,
-    monthsData, activeMonthRecord, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, installments,
+    monthsData, activeMonthRecord, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, allUnplannedExpenses, installments,
     savingsConfig, savingsAllocations, addIncome, addExpense, addInstallment, addUnplannedExpense,
     categories, closeMonth, reopenMonth, showToast
   } = useApp();
@@ -98,7 +98,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   // CÁLCULO DE DATOS FINANCIEROS ENCADENADOS
   // -------------------------------------------------------------------
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
 
   // Obtener los datos del período seleccionado actual
@@ -541,6 +541,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       {/* -----------------------------------------------------------------
           6. CONTROLES DE ADMINISTRADOR (CERRAR / ABRIR MES)
           ----------------------------------------------------------------- */}
+      {activeMonthRecord?.status === 'closed' && currentPeriodData.isFrozen && (
+        <div className="mx-4 mt-5 flex items-start gap-2 border border-brand-rose/20 p-3 rounded-2xl bg-brand-rose/5 text-xs text-lux-muted">
+          <AlertTriangle size={14} className="text-brand-rose shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-0.5">
+            <span>
+              Saldo de cierre fijo: {Number(currentPeriodData.finalBalance).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}.
+              Los ajustes posteriores no modifican los saldos de los meses siguientes.
+            </span>
+            {Math.abs(currentPeriodData.closingDrift) >= 0.01 && (
+              <span className="font-semibold text-brand-rose">
+                Ajustes posteriores al cierre: {Number(currentPeriodData.closingDrift).toLocaleString('de-DE', { style: 'currency', currency: 'EUR', signDisplay: 'exceptZero' })}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeMonthRecord && (
         <div className="mx-4 mt-5 flex justify-end">
           {activeMonthRecord.status !== 'closed' ? (

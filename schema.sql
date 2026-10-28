@@ -16,9 +16,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 -- Habilitar RLS en profiles
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Los perfiles son públicos para lectura" 
-    ON public.profiles FOR SELECT 
-    USING (true);
+-- (la política de lectura de perfiles se define más abajo, tras crear household_members)
 
 CREATE POLICY "Los usuarios pueden actualizar su propio perfil" 
     ON public.profiles FOR UPDATE 
@@ -75,27 +73,82 @@ CREATE TABLE IF NOT EXISTS public.household_members (
 ALTER TABLE public.household_members ENABLE ROW LEVEL SECURITY;
 
 
--- Función de utilidad para políticas RLS de seguridad (Comprobar pertenencia al hogar)
+-- Funciones de utilidad para políticas RLS y unión por invitación
 CREATE OR REPLACE FUNCTION public.is_household_member(household_uuid UUID)
-RETURNS BOOLEAN SECURITY DEFINER AS $$
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     RETURN EXISTS (
         SELECT 1 FROM public.household_members
         WHERE household_id = household_uuid AND user_id = auth.uid()
     );
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
--- Función de utilidad para comprobar si el usuario es administrador del hogar
 CREATE OR REPLACE FUNCTION public.is_household_admin(household_uuid UUID)
-RETURNS BOOLEAN SECURITY DEFINER AS $$
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     RETURN EXISTS (
         SELECT 1 FROM public.household_members
         WHERE household_id = household_uuid AND user_id = auth.uid() AND role = 'admin'
     );
 END;
-$$ LANGUAGE plpgsql;
+$$;
+
+-- El usuario creó el hogar y este todavía no tiene miembros (alta inicial del admin)
+CREATE OR REPLACE FUNCTION public.can_bootstrap_household_admin(household_uuid UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.households h
+        WHERE h.id = household_uuid AND h.created_by = auth.uid()
+    ) AND NOT EXISTS (
+        SELECT 1 FROM public.household_members m WHERE m.household_id = household_uuid
+    );
+$$;
+
+-- El usuario comparte al menos un hogar con el perfil indicado
+CREATE OR REPLACE FUNCTION public.shares_household_with(other_user UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.household_members a
+        JOIN public.household_members b ON a.household_id = b.household_id
+        WHERE a.user_id = auth.uid() AND b.user_id = other_user
+    );
+$$;
+
+-- ---------------------------------------------------------------------
+-- Unirse a un hogar con código de invitación (único camino para invitados)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.join_household(invite TEXT)
+RETURNS TABLE (household_id UUID, household_name TEXT, already_member BOOLEAN)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    h public.households%ROWTYPE;
+    inserted INTEGER;
+BEGIN
+    IF auth.uid() IS NULL THEN
+        RAISE EXCEPTION 'not_authenticated';
+    END IF;
+
+    SELECT * INTO h FROM public.households
+    WHERE invite_code = upper(btrim(invite));
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'invalid_invite_code';
+    END IF;
+
+    INSERT INTO public.household_members (household_id, user_id, role)
+    VALUES (h.id, auth.uid(), 'collaborator')
+    ON CONFLICT (household_id, user_id) DO NOTHING;
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
+    RETURN QUERY SELECT h.id, h.name, (inserted = 0);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.join_household(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.join_household(TEXT) TO authenticated;
+
 
 
 -- Políticas de seguridad para households (Hogares)
@@ -113,25 +166,30 @@ CREATE POLICY "Los usuarios autenticados pueden crear hogares"
     ON public.households FOR INSERT
     WITH CHECK (auth.uid() = created_by);
 
-CREATE POLICY "Los miembros pueden actualizar la configuración del hogar"
+CREATE POLICY "Solo el admin puede actualizar la configuración del hogar"
     ON public.households FOR UPDATE
-    USING (
-        id IN (
-            SELECT hm.household_id 
-            FROM public.household_members hm 
-            WHERE hm.user_id = auth.uid()
-        )
-    );
+    USING (public.is_household_admin(id))
+    WITH CHECK (public.is_household_admin(id));
 
 
 -- Políticas de seguridad para household_members (Miembros)
 CREATE POLICY "Los miembros pueden ver la lista de integrantes del hogar"
     ON public.household_members FOR SELECT
-    USING (auth.uid() = user_id);
+    USING (public.is_household_member(household_id));
 
-CREATE POLICY "Los usuarios pueden registrar su propia membresía (creador o invitado)"
+CREATE POLICY "El creador puede registrarse como admin de su hogar nuevo"
     ON public.household_members FOR INSERT
-    WITH CHECK (auth.uid() = user_id);
+    WITH CHECK (
+        auth.uid() = user_id
+        AND role = 'admin'
+        AND public.can_bootstrap_household_admin(household_id)
+    );
+
+-- Los invitados entran solo mediante public.join_household(código) (ver más abajo)
+
+CREATE POLICY "Perfil propio y de integrantes del mismo hogar"
+    ON public.profiles FOR SELECT
+    USING (auth.uid() = id OR public.shares_household_with(id));
 
 CREATE POLICY "Sólo el administrador puede modificar roles de los miembros"
     ON public.household_members FOR UPDATE
@@ -169,6 +227,8 @@ CREATE TABLE IF NOT EXISTS public.months (
     year INTEGER NOT NULL,
     month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
     status TEXT CHECK (status IN ('open', 'planning', 'closed')) DEFAULT 'open' NOT NULL,
+    closing_balance NUMERIC(14,2),
+    closed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     UNIQUE (household_id, year, month)
 );
@@ -215,6 +275,8 @@ CREATE TABLE IF NOT EXISTS public.incomes (
     account TEXT NOT NULL,
     category TEXT CHECK (category IN ('Sueldo', 'Freelance', 'Bono', 'Otros')),
     is_estimated BOOLEAN DEFAULT false NOT NULL,
+    is_recurring BOOLEAN DEFAULT false NOT NULL,
+    recurrence_group_id UUID, -- serie recurrente: todas las copias mensuales comparten grupo
     created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -244,6 +306,8 @@ CREATE TABLE IF NOT EXISTS public.expenses (
     is_planned BOOLEAN DEFAULT false NOT NULL,
     notes TEXT,
     is_recurring BOOLEAN DEFAULT false NOT NULL,
+    recurrence_group_id UUID, -- serie recurrente: todas las copias mensuales comparten grupo
+    reconciled BOOLEAN, -- true = debitado, false = pendiente, NULL = automático por fecha
     created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     installment_id UUID REFERENCES public.installments(id) ON DELETE CASCADE,
     installment_number INTEGER,
