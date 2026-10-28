@@ -27,7 +27,7 @@ export const ResetBalancePanel: React.FC<ResetBalancePanelProps> = ({ isOpen, on
 
 const ResetBalanceForm: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const {
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments,
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments,
     savingsConfig, savingsAllocations, currentPeriod, activeHousehold, resetSavingsBalance
   } = useApp();
 
@@ -44,9 +44,9 @@ const ResetBalanceForm: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       ? { ...savingsConfig, anchor_year: null, anchor_month: null, anchor_balance: null }
       : null;
     return calculateEncainedFinances(
-      monthsData, allIncomes, allExpenses, unplannedExpenses, installments, cfg, billingDay, savingsAllocations
+      monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, cfg, billingDay, savingsAllocations
     );
-  }, [monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]);
+  }, [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]);
 
   // Meses ya terminados (anteriores al período en curso), del más reciente al más antiguo
   const pastMonths = useMemo(
@@ -74,10 +74,10 @@ const ResetBalanceForm: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // Saldo del fondo actual (con el ajuste vigente, si lo hay)
   const currentMonthNow = useMemo(() => {
     const months = calculateEncainedFinances(
-      monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations
+      monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations
     );
     return months.find((c) => c.year === currentPeriod.year && c.month === currentPeriod.month) || null;
-  }, [monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations, currentPeriod]);
+  }, [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations, currentPeriod]);
 
   // Vista previa: cómo quedaría el fondo con el nuevo saldo
   const preview = useMemo(() => {
@@ -89,10 +89,10 @@ const ResetBalanceForm: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       anchor_balance: parsedBalance
     };
     const months = calculateEncainedFinances(
-      monthsData, allIncomes, allExpenses, unplannedExpenses, installments, draft, billingDay, savingsAllocations
+      monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, draft, billingDay, savingsAllocations
     );
     return months.find((c) => c.year === currentPeriod.year && c.month === currentPeriod.month) || null;
-  }, [isValid, selected, parsedBalance, savingsConfig, monthsData, allIncomes, allExpenses, unplannedExpenses, installments, billingDay, savingsAllocations, currentPeriod]);
+  }, [isValid, selected, parsedBalance, savingsConfig, monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, billingDay, savingsAllocations, currentPeriod]);
 
   const difference = isValid && selected ? parsedBalance - selected.finalBalance : 0;
   const currentMonthLabel = getPeriodLabel(currentPeriod.year, currentPeriod.month);

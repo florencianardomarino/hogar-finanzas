@@ -22,7 +22,7 @@ const labelClass = 'text-xs font-semibold text-lux-muted uppercase tracking-wide
 export const SavingsAccountsSection: React.FC = () => {
   const {
     savingsAccounts, savingsAllocations, savingsAccountExpenses, savingsAccountsReady,
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig,
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig,
     currentPeriod, activeHousehold,
     addSavingsAccount, updateSavingsAccount, deleteSavingsAccount,
     setSavingsAllocation, deleteSavingsAllocation,
@@ -37,9 +37,9 @@ export const SavingsAccountsSection: React.FC = () => {
   const calculatedMonths = useMemo(
     () =>
       calculateEncainedFinances(
-        monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations
+        monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations
       ),
-    [monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]
+    [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations]
   );
 
   const isUpToCurrent = (year: number, month: number) =>

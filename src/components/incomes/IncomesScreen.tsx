@@ -8,7 +8,7 @@ import { Panel } from '../ui/Panel';
 export const IncomesScreen: React.FC = () => {
   const { 
     incomes, deleteIncome, updateIncome, addIncome, activeMonthRecord, selectedPeriod, showToast, activeHousehold,
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations
   } = useApp();
 
   // Cargar cuentas dinámicas del hogar con fallbacks seguros
@@ -113,7 +113,7 @@ export const IncomesScreen: React.FC = () => {
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
 
   // Obtener los datos del período seleccionado actual

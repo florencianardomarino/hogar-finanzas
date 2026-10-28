@@ -50,6 +50,9 @@ export interface Month {
   year: number;
   month: number;
   status: MonthStatus;
+  // Saldo de cierre congelado al cerrar el mes (null en meses abiertos o cerrados antes de la migración)
+  closing_balance?: number | null;
+  closed_at?: string | null;
   created_at: string;
 }
 
@@ -63,6 +66,10 @@ export interface Income {
   category: IncomeCategory | null;
   is_estimated: boolean;
   is_recurring?: boolean;
+  // Serie recurrente a la que pertenece (todas las copias mensuales comparten el mismo grupo)
+  recurrence_group_id?: string | null;
+  // Día original de la serie, solo en filas proyectadas (evita que el día 31 derive a 30)
+  projection_day?: number;
   created_by: string | null;
   created_at: string;
   profiles?: Profile;
@@ -80,6 +87,10 @@ export interface Expense {
   is_planned: boolean;
   notes: string | null;
   is_recurring?: boolean;
+  recurrence_group_id?: string | null;
+  projection_day?: number;
+  // Conciliación explícita: true = debitado, false = pendiente, null/undefined = automático por fecha
+  reconciled?: boolean | null;
   created_by: string | null;
   installment_id?: string | null;
   installment_number?: number | null;

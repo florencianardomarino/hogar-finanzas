@@ -21,7 +21,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
     monthsData, 
     allIncomes, 
     allExpenses, 
-    unplannedExpenses, 
+    unplannedExpenses, allUnplannedExpenses,
     installments, 
     savingsConfig, 
     currentPeriod, 
@@ -54,7 +54,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, unplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
   );
 
   // Ajuste manual vigente (saldo restablecido a un mes cerrado)

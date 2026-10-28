@@ -92,6 +92,7 @@ export function getPeriodRange(year: number, month: number, billingCycleStartDay
     const lastDayOfMonth = new Date(year, month, 0).getDate();
     endDay = lastDayOfMonth;
     finalEndMonth = month - 1;
+    finalEndYear = year;
   }
 
   const end = new Date(finalEndYear, finalEndMonth, endDay, 23, 59, 59, 999);
