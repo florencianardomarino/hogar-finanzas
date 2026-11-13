@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import type { Session } from '@supabase/supabase-js';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
@@ -243,7 +244,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const initializeAuth = async () => {
       setLoadingAuth(true);
       try {
-        console.log('DEBUG Homeflow - Starting initializeAuth...');
         
         // Timeout de 6 segundos para obtener la sesión inicial
         const authTimeout = new Promise<any>((_, reject) =>
@@ -255,7 +255,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const session = raceResult?.data?.session || raceResult?.session || null;
         
         if (session) {
-          console.log('DEBUG Homeflow - Initial session found:', session.user.email);
           setUser(session.user);
           
           // Cargar perfil en segundo plano (sin bloquear el arranque de la app)
@@ -286,7 +285,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // Cargar hogares de inmediato antes de desactivar loadingAuth
           await loadHouseholds(session.user.id);
         } else {
-          console.log('DEBUG Homeflow - No initial session found');
           setUser(null);
           setProfile(null);
         }
@@ -302,9 +300,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     initializeAuth();
 
     // Nos suscribimos a cambios posteriores de autenticación
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('DEBUG Homeflow - AuthStateChange Event:', event, 'Session:', session ? 'Active' : 'Null');
-      
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // No hacer await de llamadas a Supabase dentro de este callback: la librería lo espera
+      // con el lock de auth tomado y cualquier consulta queda colgada (deadlock). Se difiere.
+      setTimeout(() => { void handleAuthChange(event, session); }, 0);
+    });
+
+    const handleAuthChange = async (event: string, session: Session | null) => {
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session) {
         setUser(session.user);
         
@@ -350,7 +352,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         householdsLoadedRef.current = false;
         localStorage.removeItem('active_household_id');
       }
-    });
+    };
 
     return () => {
       subscription.unsubscribe();
@@ -383,7 +385,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const loadHouseholds = async (userId: string) => {
     // Si ya existe una consulta de hogares activa en este momento, reutilizamos la misma promesa
     if (activeLoadPromiseRef.current) {
-      console.log('DEBUG Homeflow - loadHouseholds ya en ejecución, reusando promesa activa.');
       return activeLoadPromiseRef.current;
     }
 
@@ -417,7 +418,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // podría ser por retraso de propagación del JWT en las cabeceras de Supabase (RLS).
         // Hacemos una pausa y reintentamos tras 600ms una única vez para garantizar robustez absoluta.
         if (!error && (!members || members.length === 0)) {
-          console.log('DEBUG Homeflow - RLS no devolvió hogares en primer intento. Reintentando en 600ms...');
           await new Promise((resolve) => setTimeout(resolve, 600));
           
           const retryQueryPromise = supabase
