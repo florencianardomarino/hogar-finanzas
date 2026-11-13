@@ -25,7 +25,6 @@ const AppContent: React.FC = () => {
     currentPeriod, selectedPeriod, setSelectedPeriod, activeMonthRecord
   } = useApp();
 
-  console.log('DEBUG Homeflow - loadingAuth:', loadingAuth, 'loadingHouseholds:', loadingHouseholds, 'user:', user ? user.email : 'null', 'households:', households.length);
 
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [showHouseholdDropdown, setShowHouseholdDropdown] = useState(false);
