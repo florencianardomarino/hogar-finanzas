@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
-  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind
+  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget
 } from '../types';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
 import { calculateEncainedFinances } from '../utils/financeUtils';
@@ -81,6 +81,8 @@ interface AppContextType {
   savingsAllocations: SavingsAllocation[];
   savingsAccountExpenses: SavingsAccountExpense[];
   savingsAccountsReady: boolean; // false si falta ejecutar la migración SQL
+  categoryBudgets: CategoryBudget[]; // ajustes puntuales del presupuesto de una categoría en un mes
+  categoryBudgetsReady: boolean; // false si falta ejecutar migration_category_budgets.sql
   loadingData: boolean;
   
   // Operaciones Financieras
@@ -109,6 +111,8 @@ interface AppContextType {
   updateSavingsAccount: (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => Promise<void>;
   deleteSavingsAccount: (id: string) => Promise<void>;
   setSavingsAllocation: (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => Promise<void>;
+  // amount null = quitar el ajuste del mes y volver al presupuesto base de la categoría
+  setCategoryBudget: (categoryId: string, year: number, month: number, amount: number | null) => Promise<void>;
   deleteSavingsAllocation: (id: string) => Promise<void>;
   addSavingsAccountExpense: (expense: Pick<SavingsAccountExpense, 'savings_account_id' | 'description' | 'amount' | 'date' | 'notes'>) => Promise<void>;
   updateSavingsAccountExpense: (id: string, patch: Partial<Pick<SavingsAccountExpense, 'description' | 'amount' | 'date' | 'notes'>>) => Promise<void>;
@@ -173,6 +177,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [savingsAllocations, setSavingsAllocations] = useState<SavingsAllocation[]>([]);
   const [savingsAccountExpenses, setSavingsAccountExpenses] = useState<SavingsAccountExpense[]>([]);
   const [savingsAccountsReady, setSavingsAccountsReady] = useState(true);
+  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
+  const [categoryBudgetsReady, setCategoryBudgetsReady] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
 
   // Toasts & Tema
@@ -1139,6 +1145,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!sExpsError) setSavingsAccountExpenses((sExps || []) as SavingsAccountExpense[]);
       }
 
+      // 8. Ajustes mensuales del presupuesto por categoría (opcional: requiere migración)
+      const { data: cBudgets, error: cBudgetsError } = await supabase
+        .from('category_budgets')
+        .select('*')
+        .eq('household_id', activeHousehold.id);
+
+      if (cBudgetsError) {
+        if (isMissingSchemaError(cBudgetsError)) {
+          setCategoryBudgetsReady(false);
+          setCategoryBudgets([]);
+        }
+      } else {
+        setCategoryBudgetsReady(true);
+        setCategoryBudgets((cBudgets || []) as CategoryBudget[]);
+      }
+
     } catch (e) {
       console.error('Error loading financial data', e);
       showToast('Error al cargar datos financieros', 'error');
@@ -1186,6 +1208,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSavingsAccounts([]);
       setSavingsAllocations([]);
       setSavingsAccountExpenses([]);
+      setCategoryBudgets([]);
     }
   }, [activeHousehold, activeMonthRecord]);
 
@@ -1252,12 +1275,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
     }
 
+    if (categoryBudgetsReady) {
+      channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'category_budgets', filter: `household_id=eq.${activeHousehold.id}` },
+        () => loadFinancialData()
+      );
+    }
+
     channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeHousehold, activeMonthRecord, savingsAccountsReady]);
+  }, [activeHousehold, activeMonthRecord, savingsAccountsReady, categoryBudgetsReady]);
 
   const getOrCreateMonthIdForDate = async (dateStr: string): Promise<string> => {
     if (!activeHousehold) throw new Error("No active household");
@@ -2253,6 +2284,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const setCategoryBudget = async (categoryId: string, year: number, month: number, amount: number | null) => {
+    if (!activeHousehold || !user) return;
+    try {
+      if (amount == null) {
+        const { error } = await supabase
+          .from('category_budgets')
+          .delete()
+          .eq('category_id', categoryId)
+          .eq('year', year)
+          .eq('month', month);
+        if (error) throw error;
+        showToast('Presupuesto del mes restablecido al base', 'info');
+      } else {
+        const { error } = await supabase
+          .from('category_budgets')
+          .upsert(
+            { household_id: activeHousehold.id, category_id: categoryId, year, month, amount, created_by: user.id },
+            { onConflict: 'category_id,year,month' }
+          );
+        if (error) throw error;
+        showToast('Presupuesto del mes guardado', 'success');
+      }
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in setCategoryBudget:', e);
+      showToast(
+        isMissingSchemaError(e)
+          ? 'Falta ejecutar la migración de presupuestos por categoría en Supabase'
+          : 'Error al guardar el presupuesto del mes',
+        'error'
+      );
+      throw e;
+    }
+  };
+
   const deleteSavingsAllocation = async (id: string) => {
     try {
       const { error } = await supabase
@@ -2367,6 +2433,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         savingsAllocations,
         savingsAccountExpenses,
         savingsAccountsReady,
+        categoryBudgets,
+        categoryBudgetsReady,
         loadingData,
         
         addIncome,
@@ -2388,6 +2456,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSavingsAccount,
         deleteSavingsAccount,
         setSavingsAllocation,
+        setCategoryBudget,
         deleteSavingsAllocation,
         addSavingsAccountExpense,
         updateSavingsAccountExpense,

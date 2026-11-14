@@ -5,6 +5,8 @@ import {
   FinancialPeriod, toISODateString 
 } from '../../utils/dateUtils';
 import { calculateEncainedFinances } from '../../utils/financeUtils';
+import { calculateMonthPlan, resolveMonthBudgets } from '../../utils/planUtils';
+import { PlanSummaryCard } from './PlanSummaryCard';
 import { Panel } from '../ui/Panel';
 import { ChipsSelector, ChipOption } from '../ui/ChipsSelector';
 import { 
@@ -21,7 +23,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     activeHousehold, userRole, currentPeriod, selectedPeriod, setSelectedPeriod,
     monthsData, activeMonthRecord, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, allUnplannedExpenses, installments,
     savingsConfig, savingsAllocations, addIncome, addExpense, addInstallment, addUnplannedExpense,
-    categories, closeMonth, reopenMonth, showToast
+    categories, categoryBudgets, closeMonth, reopenMonth, showToast
   } = useApp();
 
   // Estados para controlar los paneles flotantes (formularios)
@@ -120,6 +122,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const dashboardPendingAmount = dashboardMonthExps
     .filter((e: any) => !e.is_reconciled)
     .reduce((acc: number, e: any) => acc + Number(e.amount), 0);
+
+  // Planificado vs real del período seleccionado (solo si el período ya está calculado)
+  const calculatedSelected = calculatedMonths.find(
+    (c) => c.year === selectedPeriod.year && c.month === selectedPeriod.month
+  );
+  const monthPlan = calculatedSelected
+    ? calculateMonthPlan(
+        calculatedSelected,
+        resolveMonthBudgets(categories, categoryBudgets, selectedPeriod.year, selectedPeriod.month),
+        activeHousehold?.billing_cycle_start_day || 10
+      )
+    : null;
 
   // Calcular el saldo real acumulado actual
   // Es el saldo final del mes en curso real (ignorando proyecciones futuras)
@@ -437,58 +451,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       </div>
 
       {/* -----------------------------------------------------------------
-          4. ADVERTENCIA SI SUPERA EL PRESUPUESTO DE SUPERMERCADO
+          4. PLANIFICADO VS REAL Y PRESUPUESTOS DE CATEGORÍA
           ----------------------------------------------------------------- */}
-      {(() => {
-        // Encontrar categoría supermercado
-        const superCat = categories.find((c) => c.name.toLowerCase().includes('supermercado'));
-        if (!superCat || !superCat.budget_limit) return null;
-        
-        // Sumar gastos de esta categoría en este mes
-        const monthExps = currentPeriodData.expensesList || expenses;
-        const totalSuper = monthExps
-          .filter((e: any) => e.category_id === superCat.id)
-          .reduce((acc: number, e: any) => acc + Number(e.amount), 0);
-
-        const limit = Number(superCat.budget_limit);
-        const percent = Math.min((totalSuper / limit) * 100, 100);
-        const isOver = totalSuper > limit;
-
-        return (
-          <div className="mx-4 mt-5 glass-panel p-4.5 rounded-3xl border-lux-border/40 flex flex-col gap-2">
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-1.5">
-                <div className={`w-2 h-2 rounded-full ${isOver ? 'bg-brand-rose animate-ping' : 'bg-brand-emerald'}`} />
-                <span className="text-xs font-bold text-lux-text">Presupuesto: Supermercado y Varios</span>
-              </div>
-              <span className={`text-xs font-extrabold ${isOver ? 'text-brand-rose' : 'text-lux-muted'}`}>
-                {totalSuper.toFixed(2)}€ / {limit}€
-              </span>
-            </div>
-            
-            {/* Barra de progreso animada */}
-            <div className="w-full h-2 bg-lux-border/30 rounded-full overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ease-out ${
-                  isOver 
-                    ? 'bg-gradient-to-r from-red-500 to-brand-rose' 
-                    : percent > 80 
-                      ? 'bg-brand-amber' 
-                      : 'bg-gradient-to-r from-emerald-500 to-brand-emerald'
-                }`}
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-
-            {isOver && (
-              <div className="flex items-center gap-1.5 mt-1 text-[10px] text-brand-rose font-semibold bg-brand-rose/10 px-2.5 py-1 rounded-xl border border-brand-rose/10">
-                <AlertTriangle size={12} />
-                <span>¡Se ha superado el presupuesto configurado de este mes! (+{(totalSuper - limit).toFixed(2)}€)</span>
-              </div>
-            )}
-          </div>
-        );
-      })()}
+      {monthPlan && (
+        <PlanSummaryCard
+          plan={monthPlan}
+          categories={categories}
+          monthClosed={calculatedSelected?.status === 'closed'}
+        />
+      )}
 
       {/* -----------------------------------------------------------------
           5. DESGLOSE DE GASTOS POR CATEGORÍAS EN MINI-BARRAS

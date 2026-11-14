@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { getPeriodLabel, formatCompactDate, toISODateString } from '../../utils/dateUtils';
 import { calculateEncainedFinances } from '../../utils/financeUtils';
+import { calculateMonthPlan, resolveMonthBudgets } from '../../utils/planUtils';
+import { BudgetsSection } from './BudgetsSection';
 import { Panel } from '../ui/Panel';
 import { 
   Trash2, Edit3, ArrowDownRight, ShoppingBag, Landmark, 
@@ -12,7 +14,7 @@ export const ExpensesScreen: React.FC = () => {
   const {
     monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations,
     deleteExpense, updateExpense, addExpense, activeMonthRecord, selectedPeriod, categories, showToast,
-    activeHousehold
+    activeHousehold, categoryBudgets
   } = useApp();
 
   // Cargar titulares y cuentas dinámicas con fallbacks seguros
@@ -117,6 +119,24 @@ export const ExpensesScreen: React.FC = () => {
   ) || {
     totalExpenses: expenses.reduce((acc, e) => acc + Number(e.amount), 0),
     expensesList: expenses
+  };
+
+  const calculatedSelected = calculatedMonths.find(
+    (c) => c.year === selectedPeriod.year && c.month === selectedPeriod.month
+  );
+  const monthPlan = calculatedSelected
+    ? calculateMonthPlan(
+        calculatedSelected,
+        resolveMonthBudgets(categories, categoryBudgets, selectedPeriod.year, selectedPeriod.month),
+        activeHousehold?.billing_cycle_start_day || 10
+      )
+    : null;
+
+  // Compra parcial: abre el registro de gasto con la categoría del presupuesto ya elegida
+  const handleAddPurchase = (categoryId: string) => {
+    setAddCategory(categoryId);
+    setAddDate(toISODateString(new Date()));
+    setIsAddPanelOpen(true);
   };
 
   const monthExpensesList = currentPeriodData.expensesList || expenses;
@@ -278,6 +298,17 @@ export const ExpensesScreen: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {monthPlan && (
+        <BudgetsSection
+          plan={monthPlan}
+          categories={categories}
+          year={selectedPeriod.year}
+          month={selectedPeriod.month}
+          monthClosed={activeMonthRecord?.status === 'closed'}
+          onAddPurchase={handleAddPurchase}
+        />
+      )}
 
       {/* Filtros de Débito */}
       <div className="flex gap-1.5 mb-5 overflow-x-auto pb-1">

@@ -183,6 +183,18 @@ export interface SavingsAccountExpense {
   created_at: string;
 }
 
+// Ajuste puntual del presupuesto de una categoría en un mes (sin fila: se usa expense_categories.budget_limit)
+export interface CategoryBudget {
+  id: string;
+  household_id: string;
+  category_id: string;
+  year: number;
+  month: number;
+  amount: number;
+  created_by: string | null;
+  created_at: string;
+}
+
 // Tipo compuesto para la visualización del resumen mensual
 export interface MonthlySummary {
   month: Month;
