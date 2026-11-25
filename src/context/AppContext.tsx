@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
-  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind
+  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget, HouseholdResetScope
 } from '../types';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
 import { calculateEncainedFinances } from '../utils/financeUtils';
@@ -81,6 +81,8 @@ interface AppContextType {
   savingsAllocations: SavingsAllocation[];
   savingsAccountExpenses: SavingsAccountExpense[];
   savingsAccountsReady: boolean; // false si falta ejecutar la migración SQL
+  categoryBudgets: CategoryBudget[]; // ajustes puntuales del presupuesto de una categoría en un mes
+  categoryBudgetsReady: boolean; // false si falta ejecutar migration_category_budgets.sql
   loadingData: boolean;
   
   // Operaciones Financieras
@@ -103,12 +105,18 @@ interface AppContextType {
   updateSavingsConfig: (balance: number) => Promise<void>;
   resetSavingsBalance: (year: number, month: number, balance: number, previousComputed: number) => Promise<void>;
   clearSavingsAnchor: () => Promise<void>;
+  // Copia completa de los datos del hogar (para descargar antes de restablecer)
+  exportHouseholdData: () => Promise<Record<string, unknown>>;
+  // Borra los datos indicados del hogar (solo administrador). El restablecimiento total incluye 'months'.
+  resetHouseholdData: (scopes: HouseholdResetScope[]) => Promise<void>;
 
   // Cuentas de ahorro (ej: Inversión, Cancelar deudas)
   addSavingsAccount: (name: string, color: string) => Promise<void>;
   updateSavingsAccount: (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => Promise<void>;
   deleteSavingsAccount: (id: string) => Promise<void>;
   setSavingsAllocation: (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => Promise<void>;
+  // amount null = quitar el ajuste del mes y volver al presupuesto base de la categoría
+  setCategoryBudget: (categoryId: string, year: number, month: number, amount: number | null) => Promise<void>;
   deleteSavingsAllocation: (id: string) => Promise<void>;
   addSavingsAccountExpense: (expense: Pick<SavingsAccountExpense, 'savings_account_id' | 'description' | 'amount' | 'date' | 'notes'>) => Promise<void>;
   updateSavingsAccountExpense: (id: string, patch: Partial<Pick<SavingsAccountExpense, 'description' | 'amount' | 'date' | 'notes'>>) => Promise<void>;
@@ -173,6 +181,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [savingsAllocations, setSavingsAllocations] = useState<SavingsAllocation[]>([]);
   const [savingsAccountExpenses, setSavingsAccountExpenses] = useState<SavingsAccountExpense[]>([]);
   const [savingsAccountsReady, setSavingsAccountsReady] = useState(true);
+  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
+  const [categoryBudgetsReady, setCategoryBudgetsReady] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
 
   // Toasts & Tema
@@ -1139,6 +1149,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!sExpsError) setSavingsAccountExpenses((sExps || []) as SavingsAccountExpense[]);
       }
 
+      // 8. Ajustes mensuales del presupuesto por categoría (opcional: requiere migración)
+      const { data: cBudgets, error: cBudgetsError } = await supabase
+        .from('category_budgets')
+        .select('*')
+        .eq('household_id', activeHousehold.id);
+
+      if (cBudgetsError) {
+        if (isMissingSchemaError(cBudgetsError)) {
+          setCategoryBudgetsReady(false);
+          setCategoryBudgets([]);
+        }
+      } else {
+        setCategoryBudgetsReady(true);
+        setCategoryBudgets((cBudgets || []) as CategoryBudget[]);
+      }
+
     } catch (e) {
       console.error('Error loading financial data', e);
       showToast('Error al cargar datos financieros', 'error');
@@ -1186,6 +1212,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSavingsAccounts([]);
       setSavingsAllocations([]);
       setSavingsAccountExpenses([]);
+      setCategoryBudgets([]);
     }
   }, [activeHousehold, activeMonthRecord]);
 
@@ -1252,12 +1279,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
     }
 
+    if (categoryBudgetsReady) {
+      channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'category_budgets', filter: `household_id=eq.${activeHousehold.id}` },
+        () => loadFinancialData()
+      );
+    }
+
     channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeHousehold, activeMonthRecord, savingsAccountsReady]);
+  }, [activeHousehold, activeMonthRecord, savingsAccountsReady, categoryBudgetsReady]);
 
   const getOrCreateMonthIdForDate = async (dateStr: string): Promise<string> => {
     if (!activeHousehold) throw new Error("No active household");
@@ -1355,6 +1390,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (error) console.error(`Error updating future ${table} date:`, error);
         })
       );
+    }
+  };
+
+  // Corta una serie recurrente antes de un período: la última copia anterior deja de proyectarse.
+  // Sin esto, "borrar este y los futuros" no sirve: la fila del mes previo vuelve a proyectar la serie.
+  const endSeriesBefore = async (
+    table: 'incomes' | 'expenses',
+    target: { description: string; recurrence_group_id?: string | null },
+    year: number,
+    month: number
+  ) => {
+    if (!activeHousehold) return;
+    const { data: monthRows } = await supabase
+      .from('months')
+      .select('*')
+      .eq('household_id', activeHousehold.id);
+    const earlier = ((monthRows || []) as Month[]).filter(
+      (m) => m.year < year || (m.year === year && m.month < month)
+    );
+    if (earlier.length === 0) return;
+
+    let query = supabase
+      .from(table)
+      .select('id, month_id, description, recurrence_group_id')
+      .in('month_id', earlier.map((m) => m.id))
+      .eq('is_recurring', true);
+    if (table === 'expenses') query = query.is('installment_id', null);
+    const { data } = await query;
+
+    const order = (monthId: string) => {
+      const m = earlier.find((e) => e.id === monthId);
+      return m ? m.year * 12 + m.month : -1;
+    };
+    const series = (data || [])
+      .filter((r) => isSameSeries(target, r))
+      .sort((a, b) => order(b.month_id) - order(a.month_id));
+    if (series.length === 0) return;
+
+    const last = series[0];
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+
+    let endId = last.id;
+    if (order(last.month_id) !== prevYear * 12 + prevMonth) {
+      // La serie llega al mes previo solo como proyección: se materializa para poder cortarla ahí
+      const prevRecord = earlier.find((m) => m.year === prevYear && m.month === prevMonth);
+      if (prevRecord?.status === 'closed') return; // un mes cerrado no proyecta: la serie ya estaba cortada
+      endId = table === 'incomes'
+        ? await realizeProjectedIncome(`proj-inc-${last.id}-${prevYear}-${prevMonth}`)
+        : await realizeProjectedExpense(`proj-exp-${last.id}-${prevYear}-${prevMonth}`);
+    }
+
+    const { error } = await supabase.from(table).update({ is_recurring: false }).eq('id', endId);
+    if (error) throw error;
+  };
+
+  // Saltea un solo mes de una serie recurrente: corta la serie antes del mes y la retoma en el siguiente
+  // con una copia real, para que el mes borrado no se vuelva a proyectar desde el mes previo.
+  // Debe ejecutarse antes de borrar la fila del mes (la copia siguiente se arma con sus datos).
+  const skipMonthInSeries = async (
+    table: 'incomes' | 'expenses',
+    target: { id: string; description: string; recurrence_group_id?: string | null },
+    year: number,
+    month: number
+  ) => {
+    if (!activeHousehold) return;
+    await endSeriesBefore(table, target, year, month);
+
+    const nextYear = month === 12 ? year + 1 : year;
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const { data: nextRecord } = await supabase
+      .from('months')
+      .select('status')
+      .eq('household_id', activeHousehold.id)
+      .eq('year', nextYear)
+      .eq('month', nextMonth)
+      .maybeSingle();
+    if (nextRecord?.status === 'closed') return; // no se agregan copias a un mes cerrado
+
+    if (table === 'incomes') {
+      await realizeProjectedIncome(`proj-inc-${target.id}-${nextYear}-${nextMonth}`);
+    } else {
+      await realizeProjectedExpense(`proj-exp-${target.id}-${nextYear}-${nextMonth}`);
     }
   };
 
@@ -1573,7 +1691,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!targetIncome) throw new Error('Ingreso no encontrado');
 
-      // 2. Borrar el ingreso seleccionado
+      // 2. Si es recurrente, cortar la serie: solo este mes (se retoma al mes siguiente) o este y los futuros
+      if (targetIncome.is_recurring) {
+        const { data: originMonth } = await supabase
+          .from('months')
+          .select('year, month')
+          .eq('id', targetIncome.month_id)
+          .single();
+
+        if (originMonth) {
+          if (deleteFuture) {
+            await endSeriesBefore('incomes', targetIncome, originMonth.year, originMonth.month);
+            const { rows } = await findFutureSeriesRows('incomes', targetIncome, originMonth.year, originMonth.month);
+            if (rows.length > 0) {
+              const { error: futureErr } = await supabase.from('incomes').delete().in('id', rows.map((r) => r.id));
+              if (futureErr) throw futureErr;
+            }
+          } else {
+            await skipMonthInSeries('incomes', targetIncome, originMonth.year, originMonth.month);
+          }
+        }
+      }
+
+      // 3. Borrar el ingreso seleccionado
       const { error } = await supabase
         .from('incomes')
         .delete()
@@ -1581,29 +1721,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (error) throw error;
 
-      // 3. Si deleteFuture es true, borrar las copias de la misma serie en los meses siguientes
-      if (deleteFuture && targetIncome.is_recurring) {
-        try {
-          const { data: originMonth } = await supabase
-            .from('months')
-            .select('year, month')
-            .eq('id', targetIncome.month_id)
-            .single();
-
-          if (originMonth) {
-            const { rows } = await findFutureSeriesRows('incomes', targetIncome, originMonth.year, originMonth.month);
-            if (rows.length > 0) {
-              await supabase.from('incomes').delete().in('id', rows.map((r) => r.id));
-            }
-          }
-        } catch (futureErr) {
-          console.error('Error deleting future incomes:', futureErr);
-        }
-      }
-
       showToast('Ingreso eliminado', 'info');
-      loadFinancialData();
+      await loadFinancialData();
     } catch (e) {
+      console.error('Error in deleteIncome:', e);
       showToast('Error al eliminar ingreso', 'error');
     }
   };
@@ -1929,8 +2050,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!targetExpense) throw new Error('Gasto no encontrado');
 
-      // 2. Si se solicitó borrar futuros y es un gasto recurrente, borrar las copias de la serie
-      if (deleteFuture && targetExpense.is_recurring) {
+      // 2. Si es recurrente, cortar la serie: solo este mes (se retoma al mes siguiente) o este y los futuros
+      if (targetExpense.is_recurring) {
         const { data: originMonth } = await supabase
           .from('months')
           .select('year, month')
@@ -1938,16 +2059,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .single();
 
         if (originMonth) {
-          const { rows } = await findFutureSeriesRows('expenses', targetExpense, originMonth.year, originMonth.month);
-          if (rows.length > 0) {
-            const { error: deleteFutureError } = await supabase
-              .from('expenses')
-              .delete()
-              .in('id', rows.map((r) => r.id));
+          if (deleteFuture) {
+            await endSeriesBefore('expenses', targetExpense, originMonth.year, originMonth.month);
+            const { rows } = await findFutureSeriesRows('expenses', targetExpense, originMonth.year, originMonth.month);
+            if (rows.length > 0) {
+              const { error: deleteFutureError } = await supabase
+                .from('expenses')
+                .delete()
+                .in('id', rows.map((r) => r.id));
 
-            if (deleteFutureError) {
-              console.error('Error deleting future recurrings:', deleteFutureError);
+              if (deleteFutureError) throw deleteFutureError;
             }
+          } else {
+            await skipMonthInSeries('expenses', targetExpense, originMonth.year, originMonth.month);
           }
         }
       }
@@ -1960,7 +2084,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (error) throw error;
       showToast('Gasto eliminado', 'info');
-      loadFinancialData();
+      await loadFinancialData();
     } catch (e) {
       console.error('Error in deleteExpense:', e);
       showToast('Error al eliminar gasto', 'error');
@@ -2169,6 +2293,139 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // -------------------------------------------------------------------
+  // COPIA Y RESTABLECIMIENTO DE DATOS DEL HOGAR
+  // -------------------------------------------------------------------
+  const exportHouseholdData = async (): Promise<Record<string, unknown>> => {
+    if (!activeHousehold) throw new Error('No hay hogar activo');
+    const householdId = activeHousehold.id;
+
+    // Si una tabla opcional no existe se exporta vacía; cualquier otro error aborta, para que
+    // nunca se descargue una copia incompleta creyendo que está completa.
+    const rowsOf = async (query: PromiseLike<{ data: any[] | null; error: any }>) => {
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingSchemaError(error)) return [];
+        throw error;
+      }
+      return data || [];
+    };
+
+    const months = await rowsOf(supabase.from('months').select('*').eq('household_id', householdId));
+    const monthIds = months.map((m: any) => m.id);
+    const byMonth = (table: string) =>
+      monthIds.length > 0
+        ? rowsOf(supabase.from(table).select('*').in('month_id', monthIds))
+        : Promise.resolve([]);
+    const byHousehold = (table: string) =>
+      rowsOf(supabase.from(table).select('*').eq('household_id', householdId));
+
+    const [
+      incomes, expenses, installments, unplannedExpenses, savingsConfigRows, savingsAccountsRows,
+      savingsAllocationsRows, savingsAccountExpensesRows, categoryBudgetsRows, expenseCategories
+    ] = await Promise.all([
+      byMonth('incomes'), byMonth('expenses'), byHousehold('installments'), byHousehold('unplanned_expenses'),
+      byHousehold('savings_config'), byHousehold('savings_accounts'), byHousehold('savings_allocations'),
+      byHousehold('savings_account_expenses'), byHousehold('category_budgets'), byHousehold('expense_categories')
+    ]);
+
+    return {
+      exported_at: new Date().toISOString(),
+      household: { id: householdId, name: activeHousehold.name },
+      months,
+      incomes,
+      expenses,
+      installments,
+      unplanned_expenses: unplannedExpenses,
+      savings_config: savingsConfigRows,
+      savings_accounts: savingsAccountsRows,
+      savings_allocations: savingsAllocationsRows,
+      savings_account_expenses: savingsAccountExpensesRows,
+      category_budgets: categoryBudgetsRows,
+      expense_categories: expenseCategories
+    };
+  };
+
+  const resetHouseholdData = async (scopes: HouseholdResetScope[]) => {
+    if (!activeHousehold) return;
+    if (userRole !== 'admin') {
+      showToast('Solo el administrador puede restablecer los datos del hogar', 'error');
+      throw new Error('not_admin');
+    }
+    const wants = (scope: HouseholdResetScope) => scopes.includes(scope);
+    const everything: HouseholdResetScope[] = ['incomes', 'expenses', 'installments', 'unplanned', 'savings'];
+    if (wants('months') && !everything.every(wants)) {
+      // Borrar los meses arrastra sus ingresos, gastos y gastos extras
+      throw new Error('El restablecimiento total debe incluir todos los datos');
+    }
+
+    try {
+      const householdId = activeHousehold.id;
+      // Las tablas opcionales (ahorros) pueden no existir si falta una migración: se ignoran
+      const run = async (query: PromiseLike<{ error: any }>) => {
+        const { error } = await query;
+        if (error && !isMissingSchemaError(error)) throw error;
+      };
+
+      const { data: monthRows, error: monthsError } = await supabase
+        .from('months')
+        .select('id')
+        .eq('household_id', householdId);
+      if (monthsError) throw monthsError;
+      const monthIds = (monthRows || []).map((m) => m.id);
+
+      if (wants('expenses') && monthIds.length > 0) {
+        await run(supabase.from('expenses').delete().in('month_id', monthIds));
+      }
+      if (wants('incomes') && monthIds.length > 0) {
+        await run(supabase.from('incomes').delete().in('month_id', monthIds));
+      }
+      if (wants('installments')) {
+        // Los gastos ligados a cada plan se eliminan en cascada
+        await run(supabase.from('installments').delete().eq('household_id', householdId));
+      }
+      if (wants('unplanned')) {
+        await run(supabase.from('unplanned_expenses').delete().eq('household_id', householdId));
+      }
+      if (wants('savings')) {
+        await run(supabase.from('savings_account_expenses').delete().eq('household_id', householdId));
+        await run(supabase.from('savings_allocations').delete().eq('household_id', householdId));
+
+        const now = new Date().toISOString();
+        const { error: configError } = await supabase
+          .from('savings_config')
+          .update({
+            initial_balance: 0,
+            anchor_year: null,
+            anchor_month: null,
+            anchor_balance: null,
+            anchor_previous_computed: null,
+            anchor_set_at: null,
+            updated_at: now
+          })
+          .eq('household_id', householdId);
+        if (configError) {
+          if (!isMissingSchemaError(configError)) throw configError;
+          // Sin las columnas del ajuste manual (migración pendiente) se restablece solo el saldo inicial
+          await run(
+            supabase.from('savings_config').update({ initial_balance: 0, updated_at: now }).eq('household_id', householdId)
+          );
+        }
+      }
+      if (wants('months') && monthIds.length > 0) {
+        await run(supabase.from('months').delete().eq('household_id', householdId));
+      }
+
+      showToast('Datos restablecidos correctamente', 'success');
+      await loadPeriodRecord();
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in resetHouseholdData:', e);
+      showToast('No se pudieron restablecer todos los datos. Revisá lo que quedó y volvé a intentar.', 'error');
+      throw e;
+    }
+  };
+
+  // -------------------------------------------------------------------
   // CUENTAS DE AHORRO (Inversión, Cancelar deudas, ...)
   // -------------------------------------------------------------------
   const savingsAccountsError = (e: any, fallback: string) => {
@@ -2249,6 +2506,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await loadFinancialData();
     } catch (e) {
       savingsAccountsError(e, 'Error al guardar la asignación');
+      throw e;
+    }
+  };
+
+  const setCategoryBudget = async (categoryId: string, year: number, month: number, amount: number | null) => {
+    if (!activeHousehold || !user) return;
+    try {
+      if (amount == null) {
+        const { error } = await supabase
+          .from('category_budgets')
+          .delete()
+          .eq('category_id', categoryId)
+          .eq('year', year)
+          .eq('month', month);
+        if (error) throw error;
+        showToast('Presupuesto del mes restablecido al base', 'info');
+      } else {
+        const { error } = await supabase
+          .from('category_budgets')
+          .upsert(
+            { household_id: activeHousehold.id, category_id: categoryId, year, month, amount, created_by: user.id },
+            { onConflict: 'category_id,year,month' }
+          );
+        if (error) throw error;
+        showToast('Presupuesto del mes guardado', 'success');
+      }
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in setCategoryBudget:', e);
+      showToast(
+        isMissingSchemaError(e)
+          ? 'Falta ejecutar la migración de presupuestos por categoría en Supabase'
+          : 'Error al guardar el presupuesto del mes',
+        'error'
+      );
       throw e;
     }
   };
@@ -2367,6 +2659,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         savingsAllocations,
         savingsAccountExpenses,
         savingsAccountsReady,
+        categoryBudgets,
+        categoryBudgetsReady,
         loadingData,
         
         addIncome,
@@ -2384,10 +2678,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSavingsConfig,
         resetSavingsBalance,
         clearSavingsAnchor,
+        exportHouseholdData,
+        resetHouseholdData,
         addSavingsAccount,
         updateSavingsAccount,
         deleteSavingsAccount,
         setSavingsAllocation,
+        setCategoryBudget,
         deleteSavingsAllocation,
         addSavingsAccountExpense,
         updateSavingsAccountExpense,

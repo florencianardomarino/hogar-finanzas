@@ -417,6 +417,40 @@ describe('proyección de recurrentes', () => {
     });
     expect(find(res, 2026, 8).expensesList[0].recurrence_group_id).toBe('g9');
   });
+
+  it('si el mes previo sigue siendo recurrente, borrar solo las copias futuras no corta la serie', () => {
+    // Es el motivo por el que "eliminar este y los siguientes" debe cortar también la fila del mes previo
+    const res = run({
+      months: [month(2026, 6), month(2026, 7)],
+      expenses: [expense({ description: 'Gym', amount: 40, date: '2026-06-12', month_id: monthId(2026, 6), is_recurring: true })],
+    });
+    expect(find(res, 2026, 7).expensesList.map((e) => e.description)).toEqual(['Gym']);
+    expect(find(res, 2026, 9).expensesList.map((e) => e.description)).toEqual(['Gym']);
+  });
+
+  it('cortar la serie (la última copia deja de ser recurrente) detiene toda la proyección posterior', () => {
+    const res = run({
+      months: [month(2026, 6), month(2026, 7)],
+      expenses: [expense({ description: 'Gym', amount: 40, date: '2026-06-12', month_id: monthId(2026, 6), is_recurring: false })],
+    });
+    expect(find(res, 2026, 6).expensesList).toHaveLength(1);
+    expect(find(res, 2026, 7).expensesList).toHaveLength(0);
+    expect(find(res, 2026, 12).expensesList).toHaveLength(0);
+  });
+
+  it('saltear un mes: la serie se corta antes, el mes queda vacío y se retoma desde la copia del mes siguiente', () => {
+    const res = run({
+      months: [month(2026, 6), month(2026, 7), month(2026, 8)],
+      expenses: [
+        expense({ description: 'Gym', amount: 40, date: '2026-06-12', month_id: monthId(2026, 6), is_recurring: false }),
+        expense({ description: 'Gym', amount: 40, date: '2026-08-12', month_id: monthId(2026, 8), is_recurring: true }),
+      ],
+    });
+    expect(find(res, 2026, 7).expensesList).toHaveLength(0);
+    expect(find(res, 2026, 8).expensesList).toHaveLength(1);
+    expect(find(res, 2026, 9).expensesList.map((e) => e.description)).toEqual(['Gym']);
+    expect(find(res, 2026, 9).expensesList[0].id.startsWith('proj-exp-')).toBe(true);
+  });
 });
 
 describe('cuotas', () => {
