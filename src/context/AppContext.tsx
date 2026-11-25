@@ -1389,6 +1389,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Corta una serie recurrente antes de un período: la última copia anterior deja de proyectarse.
+  // Sin esto, "borrar este y los futuros" no sirve: la fila del mes previo vuelve a proyectar la serie.
+  const endSeriesBefore = async (
+    table: 'incomes' | 'expenses',
+    target: { description: string; recurrence_group_id?: string | null },
+    year: number,
+    month: number
+  ) => {
+    if (!activeHousehold) return;
+    const { data: monthRows } = await supabase
+      .from('months')
+      .select('*')
+      .eq('household_id', activeHousehold.id);
+    const earlier = ((monthRows || []) as Month[]).filter(
+      (m) => m.year < year || (m.year === year && m.month < month)
+    );
+    if (earlier.length === 0) return;
+
+    let query = supabase
+      .from(table)
+      .select('id, month_id, description, recurrence_group_id')
+      .in('month_id', earlier.map((m) => m.id))
+      .eq('is_recurring', true);
+    if (table === 'expenses') query = query.is('installment_id', null);
+    const { data } = await query;
+
+    const order = (monthId: string) => {
+      const m = earlier.find((e) => e.id === monthId);
+      return m ? m.year * 12 + m.month : -1;
+    };
+    const series = (data || [])
+      .filter((r) => isSameSeries(target, r))
+      .sort((a, b) => order(b.month_id) - order(a.month_id));
+    if (series.length === 0) return;
+
+    const last = series[0];
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+
+    let endId = last.id;
+    if (order(last.month_id) !== prevYear * 12 + prevMonth) {
+      // La serie llega al mes previo solo como proyección: se materializa para poder cortarla ahí
+      const prevRecord = earlier.find((m) => m.year === prevYear && m.month === prevMonth);
+      if (prevRecord?.status === 'closed') return; // un mes cerrado no proyecta: la serie ya estaba cortada
+      endId = table === 'incomes'
+        ? await realizeProjectedIncome(`proj-inc-${last.id}-${prevYear}-${prevMonth}`)
+        : await realizeProjectedExpense(`proj-exp-${last.id}-${prevYear}-${prevMonth}`);
+    }
+
+    const { error } = await supabase.from(table).update({ is_recurring: false }).eq('id', endId);
+    if (error) throw error;
+  };
+
+  // Saltea un solo mes de una serie recurrente: corta la serie antes del mes y la retoma en el siguiente
+  // con una copia real, para que el mes borrado no se vuelva a proyectar desde el mes previo.
+  // Debe ejecutarse antes de borrar la fila del mes (la copia siguiente se arma con sus datos).
+  const skipMonthInSeries = async (
+    table: 'incomes' | 'expenses',
+    target: { id: string; description: string; recurrence_group_id?: string | null },
+    year: number,
+    month: number
+  ) => {
+    if (!activeHousehold) return;
+    await endSeriesBefore(table, target, year, month);
+
+    const nextYear = month === 12 ? year + 1 : year;
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const { data: nextRecord } = await supabase
+      .from('months')
+      .select('status')
+      .eq('household_id', activeHousehold.id)
+      .eq('year', nextYear)
+      .eq('month', nextMonth)
+      .maybeSingle();
+    if (nextRecord?.status === 'closed') return; // no se agregan copias a un mes cerrado
+
+    if (table === 'incomes') {
+      await realizeProjectedIncome(`proj-inc-${target.id}-${nextYear}-${nextMonth}`);
+    } else {
+      await realizeProjectedExpense(`proj-exp-${target.id}-${nextYear}-${nextMonth}`);
+    }
+  };
+
   // -------------------------------------------------------------------
   // OPERACIONES FINANCIERAS
   // -------------------------------------------------------------------
@@ -1604,7 +1687,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!targetIncome) throw new Error('Ingreso no encontrado');
 
-      // 2. Borrar el ingreso seleccionado
+      // 2. Si es recurrente, cortar la serie: solo este mes (se retoma al mes siguiente) o este y los futuros
+      if (targetIncome.is_recurring) {
+        const { data: originMonth } = await supabase
+          .from('months')
+          .select('year, month')
+          .eq('id', targetIncome.month_id)
+          .single();
+
+        if (originMonth) {
+          if (deleteFuture) {
+            await endSeriesBefore('incomes', targetIncome, originMonth.year, originMonth.month);
+            const { rows } = await findFutureSeriesRows('incomes', targetIncome, originMonth.year, originMonth.month);
+            if (rows.length > 0) {
+              const { error: futureErr } = await supabase.from('incomes').delete().in('id', rows.map((r) => r.id));
+              if (futureErr) throw futureErr;
+            }
+          } else {
+            await skipMonthInSeries('incomes', targetIncome, originMonth.year, originMonth.month);
+          }
+        }
+      }
+
+      // 3. Borrar el ingreso seleccionado
       const { error } = await supabase
         .from('incomes')
         .delete()
@@ -1612,29 +1717,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (error) throw error;
 
-      // 3. Si deleteFuture es true, borrar las copias de la misma serie en los meses siguientes
-      if (deleteFuture && targetIncome.is_recurring) {
-        try {
-          const { data: originMonth } = await supabase
-            .from('months')
-            .select('year, month')
-            .eq('id', targetIncome.month_id)
-            .single();
-
-          if (originMonth) {
-            const { rows } = await findFutureSeriesRows('incomes', targetIncome, originMonth.year, originMonth.month);
-            if (rows.length > 0) {
-              await supabase.from('incomes').delete().in('id', rows.map((r) => r.id));
-            }
-          }
-        } catch (futureErr) {
-          console.error('Error deleting future incomes:', futureErr);
-        }
-      }
-
       showToast('Ingreso eliminado', 'info');
       loadFinancialData();
     } catch (e) {
+      console.error('Error in deleteIncome:', e);
       showToast('Error al eliminar ingreso', 'error');
     }
   };
@@ -1960,8 +2046,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!targetExpense) throw new Error('Gasto no encontrado');
 
-      // 2. Si se solicitó borrar futuros y es un gasto recurrente, borrar las copias de la serie
-      if (deleteFuture && targetExpense.is_recurring) {
+      // 2. Si es recurrente, cortar la serie: solo este mes (se retoma al mes siguiente) o este y los futuros
+      if (targetExpense.is_recurring) {
         const { data: originMonth } = await supabase
           .from('months')
           .select('year, month')
@@ -1969,16 +2055,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .single();
 
         if (originMonth) {
-          const { rows } = await findFutureSeriesRows('expenses', targetExpense, originMonth.year, originMonth.month);
-          if (rows.length > 0) {
-            const { error: deleteFutureError } = await supabase
-              .from('expenses')
-              .delete()
-              .in('id', rows.map((r) => r.id));
+          if (deleteFuture) {
+            await endSeriesBefore('expenses', targetExpense, originMonth.year, originMonth.month);
+            const { rows } = await findFutureSeriesRows('expenses', targetExpense, originMonth.year, originMonth.month);
+            if (rows.length > 0) {
+              const { error: deleteFutureError } = await supabase
+                .from('expenses')
+                .delete()
+                .in('id', rows.map((r) => r.id));
 
-            if (deleteFutureError) {
-              console.error('Error deleting future recurrings:', deleteFutureError);
+              if (deleteFutureError) throw deleteFutureError;
             }
+          } else {
+            await skipMonthInSeries('expenses', targetExpense, originMonth.year, originMonth.month);
           }
         }
       }
