@@ -4,6 +4,7 @@ import { getPeriodLabel, toISODateString } from '../../utils/dateUtils';
 import { calculateEncainedFinances } from '../../utils/financeUtils';
 import { Trash2, Edit3, ArrowUpRight, Coins, Landmark, Calendar, User, Plus } from 'lucide-react';
 import { Panel } from '../ui/Panel';
+import { Spinner } from '../ui/Spinner';
 
 export const IncomesScreen: React.FC = () => {
   const { 
@@ -104,10 +105,17 @@ export const IncomesScreen: React.FC = () => {
     } catch (e) {}
   };
 
+  // Qué opción del diálogo de borrado está en curso (null = ninguna)
+  const [deleteMode, setDeleteMode] = useState<'future' | 'single' | null>(null);
+
   const confirmDeleteRecurring = async (deleteFuture: boolean) => {
-    if (recurringIncomeToDelete) {
+    if (!recurringIncomeToDelete || deleteMode) return;
+    setDeleteMode(deleteFuture ? 'future' : 'single');
+    try {
       await deleteIncome(recurringIncomeToDelete.id, deleteFuture);
       setRecurringIncomeToDelete(null);
+    } finally {
+      setDeleteMode(null);
     }
   };
 
@@ -460,7 +468,7 @@ export const IncomesScreen: React.FC = () => {
         <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
           <div 
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setRecurringIncomeToDelete(null)}
+            onClick={() => { if (!deleteMode) setRecurringIncomeToDelete(null); }}
           />
           <div className="relative w-full max-w-sm glass-panel p-6 rounded-3xl border border-lux-border/40 shadow-2xl z-10 flex flex-col gap-5 text-center animate-fade-in">
             <div className="mx-auto w-12 h-12 bg-brand-rose/10 border border-brand-rose/20 rounded-2xl flex items-center justify-center text-brand-rose">
@@ -477,21 +485,40 @@ export const IncomesScreen: React.FC = () => {
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => confirmDeleteRecurring(true)}
-                className="w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-750 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg hover:shadow-brand-rose/25 transition-all active:scale-[0.98] cursor-pointer"
+                disabled={deleteMode !== null}
+                aria-busy={deleteMode === 'future'}
+                className="w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-750 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg hover:shadow-brand-rose/25 transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:cursor-wait disabled:opacity-70"
               >
-                Eliminar de este mes y meses posteriores
+                {deleteMode === 'future' ? (
+                  <>
+                    <Spinner />
+                    <span>Eliminando...</span>
+                  </>
+                ) : (
+                  'Eliminar de este mes y meses posteriores'
+                )}
               </button>
               
               <button
                 onClick={() => confirmDeleteRecurring(false)}
-                className="w-full bg-lux-panel border border-lux-border/60 hover:border-lux-border text-lux-text text-xs font-bold py-3.5 rounded-2xl transition-all hover:bg-lux-panel/60 cursor-pointer"
+                disabled={deleteMode !== null}
+                aria-busy={deleteMode === 'single'}
+                className="w-full bg-lux-panel border border-lux-border/60 hover:border-lux-border text-lux-text text-xs font-bold py-3.5 rounded-2xl transition-all hover:bg-lux-panel/60 cursor-pointer flex items-center justify-center gap-2 disabled:cursor-wait disabled:opacity-70"
               >
-                Eliminar solo de este mes
+                {deleteMode === 'single' ? (
+                  <>
+                    <Spinner />
+                    <span>Eliminando...</span>
+                  </>
+                ) : (
+                  'Eliminar solo de este mes'
+                )}
               </button>
               
               <button
                 onClick={() => setRecurringIncomeToDelete(null)}
-                className="w-full bg-transparent hover:bg-lux-border/20 text-lux-muted hover:text-lux-text text-xs font-bold py-2.5 rounded-2xl transition-all cursor-pointer"
+                disabled={deleteMode !== null}
+                className="w-full bg-transparent hover:bg-lux-border/20 text-lux-muted hover:text-lux-text text-xs font-bold py-2.5 rounded-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Cancelar
               </button>

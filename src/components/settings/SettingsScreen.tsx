@@ -6,6 +6,7 @@ import {
   PiggyBank, Moon, Sun, CreditCard, Landmark, Coins, Wallet
 } from 'lucide-react';
 import { Panel } from '../ui/Panel';
+import { ResetDataSection } from './ResetDataSection';
 
 export const SettingsScreen: React.FC = () => {
   const {
@@ -878,6 +879,8 @@ export const SettingsScreen: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {isAdmin && <ResetDataSection />}
 
       {/* PANEL FLOTANTE: EDITAR CUENTA / TARJETA */}
       <Panel

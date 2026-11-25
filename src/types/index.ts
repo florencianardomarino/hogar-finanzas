@@ -183,6 +183,9 @@ export interface SavingsAccountExpense {
   created_at: string;
 }
 
+// Qué datos del hogar se pueden restablecer desde Ajustes ('months' solo en el restablecimiento total)
+export type HouseholdResetScope = 'incomes' | 'expenses' | 'installments' | 'unplanned' | 'savings' | 'months';
+
 // Ajuste puntual del presupuesto de una categoría en un mes (sin fila: se usa expense_categories.budget_limit)
 export interface CategoryBudget {
   id: string;

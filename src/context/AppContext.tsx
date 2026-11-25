@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
-  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget
+  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget, HouseholdResetScope
 } from '../types';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
 import { calculateEncainedFinances } from '../utils/financeUtils';
@@ -105,6 +105,10 @@ interface AppContextType {
   updateSavingsConfig: (balance: number) => Promise<void>;
   resetSavingsBalance: (year: number, month: number, balance: number, previousComputed: number) => Promise<void>;
   clearSavingsAnchor: () => Promise<void>;
+  // Copia completa de los datos del hogar (para descargar antes de restablecer)
+  exportHouseholdData: () => Promise<Record<string, unknown>>;
+  // Borra los datos indicados del hogar (solo administrador). El restablecimiento total incluye 'months'.
+  resetHouseholdData: (scopes: HouseholdResetScope[]) => Promise<void>;
 
   // Cuentas de ahorro (ej: Inversión, Cancelar deudas)
   addSavingsAccount: (name: string, color: string) => Promise<void>;
@@ -1718,7 +1722,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (error) throw error;
 
       showToast('Ingreso eliminado', 'info');
-      loadFinancialData();
+      await loadFinancialData();
     } catch (e) {
       console.error('Error in deleteIncome:', e);
       showToast('Error al eliminar ingreso', 'error');
@@ -2080,7 +2084,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (error) throw error;
       showToast('Gasto eliminado', 'info');
-      loadFinancialData();
+      await loadFinancialData();
     } catch (e) {
       console.error('Error in deleteExpense:', e);
       showToast('Error al eliminar gasto', 'error');
@@ -2284,6 +2288,139 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await loadFinancialData();
     } catch (e) {
       showToast(isMissingSchemaError(e) ? SAVINGS_MIGRATION_MESSAGE : 'Error al quitar el ajuste manual', 'error');
+      throw e;
+    }
+  };
+
+  // -------------------------------------------------------------------
+  // COPIA Y RESTABLECIMIENTO DE DATOS DEL HOGAR
+  // -------------------------------------------------------------------
+  const exportHouseholdData = async (): Promise<Record<string, unknown>> => {
+    if (!activeHousehold) throw new Error('No hay hogar activo');
+    const householdId = activeHousehold.id;
+
+    // Si una tabla opcional no existe se exporta vacía; cualquier otro error aborta, para que
+    // nunca se descargue una copia incompleta creyendo que está completa.
+    const rowsOf = async (query: PromiseLike<{ data: any[] | null; error: any }>) => {
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingSchemaError(error)) return [];
+        throw error;
+      }
+      return data || [];
+    };
+
+    const months = await rowsOf(supabase.from('months').select('*').eq('household_id', householdId));
+    const monthIds = months.map((m: any) => m.id);
+    const byMonth = (table: string) =>
+      monthIds.length > 0
+        ? rowsOf(supabase.from(table).select('*').in('month_id', monthIds))
+        : Promise.resolve([]);
+    const byHousehold = (table: string) =>
+      rowsOf(supabase.from(table).select('*').eq('household_id', householdId));
+
+    const [
+      incomes, expenses, installments, unplannedExpenses, savingsConfigRows, savingsAccountsRows,
+      savingsAllocationsRows, savingsAccountExpensesRows, categoryBudgetsRows, expenseCategories
+    ] = await Promise.all([
+      byMonth('incomes'), byMonth('expenses'), byHousehold('installments'), byHousehold('unplanned_expenses'),
+      byHousehold('savings_config'), byHousehold('savings_accounts'), byHousehold('savings_allocations'),
+      byHousehold('savings_account_expenses'), byHousehold('category_budgets'), byHousehold('expense_categories')
+    ]);
+
+    return {
+      exported_at: new Date().toISOString(),
+      household: { id: householdId, name: activeHousehold.name },
+      months,
+      incomes,
+      expenses,
+      installments,
+      unplanned_expenses: unplannedExpenses,
+      savings_config: savingsConfigRows,
+      savings_accounts: savingsAccountsRows,
+      savings_allocations: savingsAllocationsRows,
+      savings_account_expenses: savingsAccountExpensesRows,
+      category_budgets: categoryBudgetsRows,
+      expense_categories: expenseCategories
+    };
+  };
+
+  const resetHouseholdData = async (scopes: HouseholdResetScope[]) => {
+    if (!activeHousehold) return;
+    if (userRole !== 'admin') {
+      showToast('Solo el administrador puede restablecer los datos del hogar', 'error');
+      throw new Error('not_admin');
+    }
+    const wants = (scope: HouseholdResetScope) => scopes.includes(scope);
+    const everything: HouseholdResetScope[] = ['incomes', 'expenses', 'installments', 'unplanned', 'savings'];
+    if (wants('months') && !everything.every(wants)) {
+      // Borrar los meses arrastra sus ingresos, gastos y gastos extras
+      throw new Error('El restablecimiento total debe incluir todos los datos');
+    }
+
+    try {
+      const householdId = activeHousehold.id;
+      // Las tablas opcionales (ahorros) pueden no existir si falta una migración: se ignoran
+      const run = async (query: PromiseLike<{ error: any }>) => {
+        const { error } = await query;
+        if (error && !isMissingSchemaError(error)) throw error;
+      };
+
+      const { data: monthRows, error: monthsError } = await supabase
+        .from('months')
+        .select('id')
+        .eq('household_id', householdId);
+      if (monthsError) throw monthsError;
+      const monthIds = (monthRows || []).map((m) => m.id);
+
+      if (wants('expenses') && monthIds.length > 0) {
+        await run(supabase.from('expenses').delete().in('month_id', monthIds));
+      }
+      if (wants('incomes') && monthIds.length > 0) {
+        await run(supabase.from('incomes').delete().in('month_id', monthIds));
+      }
+      if (wants('installments')) {
+        // Los gastos ligados a cada plan se eliminan en cascada
+        await run(supabase.from('installments').delete().eq('household_id', householdId));
+      }
+      if (wants('unplanned')) {
+        await run(supabase.from('unplanned_expenses').delete().eq('household_id', householdId));
+      }
+      if (wants('savings')) {
+        await run(supabase.from('savings_account_expenses').delete().eq('household_id', householdId));
+        await run(supabase.from('savings_allocations').delete().eq('household_id', householdId));
+
+        const now = new Date().toISOString();
+        const { error: configError } = await supabase
+          .from('savings_config')
+          .update({
+            initial_balance: 0,
+            anchor_year: null,
+            anchor_month: null,
+            anchor_balance: null,
+            anchor_previous_computed: null,
+            anchor_set_at: null,
+            updated_at: now
+          })
+          .eq('household_id', householdId);
+        if (configError) {
+          if (!isMissingSchemaError(configError)) throw configError;
+          // Sin las columnas del ajuste manual (migración pendiente) se restablece solo el saldo inicial
+          await run(
+            supabase.from('savings_config').update({ initial_balance: 0, updated_at: now }).eq('household_id', householdId)
+          );
+        }
+      }
+      if (wants('months') && monthIds.length > 0) {
+        await run(supabase.from('months').delete().eq('household_id', householdId));
+      }
+
+      showToast('Datos restablecidos correctamente', 'success');
+      await loadPeriodRecord();
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in resetHouseholdData:', e);
+      showToast('No se pudieron restablecer todos los datos. Revisá lo que quedó y volvé a intentar.', 'error');
       throw e;
     }
   };
@@ -2541,6 +2678,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSavingsConfig,
         resetSavingsBalance,
         clearSavingsAnchor,
+        exportHouseholdData,
+        resetHouseholdData,
         addSavingsAccount,
         updateSavingsAccount,
         deleteSavingsAccount,

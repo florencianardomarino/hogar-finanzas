@@ -5,6 +5,7 @@ import { calculateEncainedFinances } from '../../utils/financeUtils';
 import { calculateMonthPlan, resolveMonthBudgets } from '../../utils/planUtils';
 import { BudgetsSection } from './BudgetsSection';
 import { Panel } from '../ui/Panel';
+import { Spinner } from '../ui/Spinner';
 import { 
   Trash2, Edit3, ArrowDownRight, ShoppingBag, Landmark, 
   Calendar, User, AlertTriangle, Plus, CreditCard, Check
@@ -90,20 +91,31 @@ export const ExpensesScreen: React.FC = () => {
     }
   };
 
-  const handleDeleteClick = (exp: any) => {
+  // Borrado en curso: id del gasto que se está eliminando y, en el diálogo de recurrentes, qué opción se eligió
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [recurringDeleteMode, setRecurringDeleteMode] = useState<'future' | 'single' | null>(null);
+
+  const handleDeleteClick = async (exp: any) => {
     if (exp.is_recurring) {
       setRecurringExpenseToDelete(exp);
-    } else {
-      if (window.confirm(`¿Estás seguro de que deseas eliminar el gasto "${exp.description}"?`)) {
-        deleteExpense(exp.id);
+    } else if (window.confirm(`¿Estás seguro de que deseas eliminar el gasto "${exp.description}"?`)) {
+      setDeletingId(exp.id);
+      try {
+        await deleteExpense(exp.id);
+      } finally {
+        setDeletingId(null);
       }
     }
   };
 
   const confirmDeleteRecurring = async (deleteFuture: boolean) => {
-    if (recurringExpenseToDelete) {
+    if (!recurringExpenseToDelete || recurringDeleteMode) return;
+    setRecurringDeleteMode(deleteFuture ? 'future' : 'single');
+    try {
       await deleteExpense(recurringExpenseToDelete.id, deleteFuture);
       setRecurringExpenseToDelete(null);
+    } finally {
+      setRecurringDeleteMode(null);
     }
   };
 
@@ -481,10 +493,12 @@ export const ExpensesScreen: React.FC = () => {
                               </button>
                               <button
                                 onClick={(e) => { e.stopPropagation(); handleDeleteClick(exp); }}
-                                className="p-2 rounded-full hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 transition-colors cursor-pointer"
+                                disabled={deletingId === exp.id}
+                                aria-busy={deletingId === exp.id}
+                                className="p-2 rounded-full hover:bg-brand-rose/10 text-brand-rose hover:text-red-400 transition-colors cursor-pointer disabled:cursor-wait disabled:opacity-70"
                                 title="Eliminar"
                               >
-                                <Trash2 size={12} />
+                                {deletingId === exp.id ? <Spinner size={12} /> : <Trash2 size={12} />}
                               </button>
                             </div>
                           )}
@@ -766,7 +780,7 @@ export const ExpensesScreen: React.FC = () => {
           {/* Fondo desenfocado */}
           <div 
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setRecurringExpenseToDelete(null)}
+            onClick={() => { if (!recurringDeleteMode) setRecurringExpenseToDelete(null); }}
           />
           
           {/* Tarjeta del diálogo */}
@@ -785,21 +799,40 @@ export const ExpensesScreen: React.FC = () => {
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => confirmDeleteRecurring(true)}
-                className="w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-750 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg hover:shadow-brand-rose/25 transition-all active:scale-[0.98] cursor-pointer"
+                disabled={recurringDeleteMode !== null}
+                aria-busy={recurringDeleteMode === 'future'}
+                className="w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-750 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg hover:shadow-brand-rose/25 transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:cursor-wait disabled:opacity-70"
               >
-                Eliminar de este mes y meses posteriores
+                {recurringDeleteMode === 'future' ? (
+                  <>
+                    <Spinner />
+                    <span>Eliminando...</span>
+                  </>
+                ) : (
+                  'Eliminar de este mes y meses posteriores'
+                )}
               </button>
               
               <button
                 onClick={() => confirmDeleteRecurring(false)}
-                className="w-full bg-lux-panel border border-lux-border/60 hover:border-lux-border text-lux-text text-xs font-bold py-3.5 rounded-2xl transition-all hover:bg-lux-panel/60 cursor-pointer"
+                disabled={recurringDeleteMode !== null}
+                aria-busy={recurringDeleteMode === 'single'}
+                className="w-full bg-lux-panel border border-lux-border/60 hover:border-lux-border text-lux-text text-xs font-bold py-3.5 rounded-2xl transition-all hover:bg-lux-panel/60 cursor-pointer flex items-center justify-center gap-2 disabled:cursor-wait disabled:opacity-70"
               >
-                Eliminar solo de este mes
+                {recurringDeleteMode === 'single' ? (
+                  <>
+                    <Spinner />
+                    <span>Eliminando...</span>
+                  </>
+                ) : (
+                  'Eliminar solo de este mes'
+                )}
               </button>
               
               <button
                 onClick={() => setRecurringExpenseToDelete(null)}
-                className="w-full bg-transparent hover:bg-lux-border/20 text-lux-muted hover:text-lux-text text-xs font-bold py-2.5 rounded-2xl transition-all cursor-pointer"
+                disabled={recurringDeleteMode !== null}
+                className="w-full bg-transparent hover:bg-lux-border/20 text-lux-muted hover:text-lux-text text-xs font-bold py-2.5 rounded-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Cancelar
               </button>
