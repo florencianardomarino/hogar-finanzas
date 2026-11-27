@@ -153,6 +153,8 @@ export interface SavingsAccount {
   name: string;
   color: string;
   sort_order: number;
+  /** Saldo con el que ya contaba la cuenta: no sale del fondo principal de ningún mes */
+  initial_balance?: number;
   created_by: string | null;
   created_at: string;
 }

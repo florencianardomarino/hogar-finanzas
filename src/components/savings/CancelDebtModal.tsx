@@ -119,7 +119,8 @@ const CancelDebtForm: React.FC<{
       .filter((e) => e.savings_account_id === accountId)
       .reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-    return Math.round((allocatedToDate - spent) * 100) / 100;
+    const initial = Number(savingsAccounts.find((a) => a.id === accountId)?.initial_balance || 0);
+    return Math.round((initial + allocatedToDate - spent) * 100) / 100;
   };
 
   const currentAccount = savingsAccounts.find((a) => a.id === selectedAccountId);
