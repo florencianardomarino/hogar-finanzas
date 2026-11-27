@@ -47,11 +47,12 @@ const allocation = (o: Partial<SavingsAllocation> & Pick<SavingsAllocation, 'yea
 const run = (args: {
   months?: Month[]; incomes?: Income[]; expenses?: Expense[]; unplanned?: UnplannedExpense[];
   installments?: Installment[]; config?: SavingsConfig | null; allocations?: SavingsAllocation[];
+  deposits?: { year: number; month: number; amount: number }[];
 }) =>
   calculateEncainedFinances(
     args.months ?? [], args.incomes ?? [], args.expenses ?? [], args.unplanned ?? [],
     args.installments ?? [], args.config === undefined ? config() : args.config,
-    START_DAY, args.allocations ?? []
+    START_DAY, args.allocations ?? [], args.deposits ?? []
   );
 
 const find = (res: ReturnType<typeof run>, y: number, m: number) => {
@@ -594,5 +595,39 @@ describe('saldo de cierre congelado', () => {
       unplanned: [unplanned({ amount: 200, month_id: monthId(2026, 6) })],
     });
     expect(find(res, 2026, 7).previousBalance).toBe(800);
+  });
+});
+
+describe('ingresos al fondo en otra moneda (savings deposits)', () => {
+  const june = income({ amount: 1000, date: '2026-06-10', month_id: monthId(2026, 6) });
+
+  it('suma al saldo del mes y se arrastra a los meses siguientes', () => {
+    const res = run({
+      months: [month(2026, 6), month(2026, 7)],
+      incomes: [june],
+      deposits: [{ year: 2026, month: 6, amount: 460 }]
+    });
+    expect(find(res, 2026, 6).totalDeposits).toBe(460);
+    expect(find(res, 2026, 6).finalBalance).toBe(1460);
+    expect(find(res, 2026, 7).previousBalance).toBe(1460);
+  });
+
+  it('no cuenta como ingreso: no cambia el total de ingresos ni la base de los porcentajes', () => {
+    const res = run({
+      months: [month(2026, 6)],
+      incomes: [june],
+      deposits: [{ year: 2026, month: 6, amount: 460 }]
+    });
+    expect(find(res, 2026, 6).totalIncomes).toBe(1000);
+    expect(find(res, 2026, 6).saving).toBe(1000);
+  });
+
+  it('un ingreso de otro mes no afecta a este', () => {
+    const res = run({
+      months: [month(2026, 6)],
+      incomes: [june],
+      deposits: [{ year: 2026, month: 5, amount: 460 }]
+    });
+    expect(find(res, 2026, 6).totalDeposits).toBe(0);
   });
 });

@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js';
 import { 
   Profile, Household, UserRole, ExpenseCategory, Month, 
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
-  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget, HouseholdResetScope
+  SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget, HouseholdResetScope, SavingsDeposit
 } from '../types';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
 import { calculateEncainedFinances } from '../utils/financeUtils';
@@ -82,6 +82,8 @@ interface AppContextType {
   savingsAccountExpenses: SavingsAccountExpense[];
   savingsAccountsReady: boolean; // false si falta ejecutar la migración SQL
   categoryBudgets: CategoryBudget[]; // ajustes puntuales del presupuesto de una categoría en un mes
+  savingsDeposits: SavingsDeposit[];
+  savingsDepositsReady: boolean; // false si falta ejecutar migration_savings_deposits.sql
   categoryBudgetsReady: boolean; // false si falta ejecutar migration_category_budgets.sql
   loadingData: boolean;
   
@@ -116,6 +118,8 @@ interface AppContextType {
   deleteSavingsAccount: (id: string) => Promise<void>;
   setSavingsAllocation: (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => Promise<void>;
   // amount null = quitar el ajuste del mes y volver al presupuesto base de la categoría
+  addSavingsDeposit: (d: Pick<SavingsDeposit, 'date' | 'description' | 'original_amount' | 'original_currency' | 'exchange_rate'>) => Promise<void>;
+  deleteSavingsDeposit: (id: string) => Promise<void>;
   setCategoryBudget: (categoryId: string, year: number, month: number, amount: number | null) => Promise<void>;
   deleteSavingsAllocation: (id: string) => Promise<void>;
   addSavingsAccountExpense: (expense: Pick<SavingsAccountExpense, 'savings_account_id' | 'description' | 'amount' | 'date' | 'notes'>) => Promise<void>;
@@ -183,6 +187,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [savingsAccountsReady, setSavingsAccountsReady] = useState(true);
   const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
   const [categoryBudgetsReady, setCategoryBudgetsReady] = useState(true);
+  const [savingsDeposits, setSavingsDeposits] = useState<SavingsDeposit[]>([]);
+  const [savingsDepositsReady, setSavingsDepositsReady] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
 
   // Toasts & Tema
@@ -883,7 +889,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Congelamos el saldo de cierre tal como lo muestra la app en este momento
       const calculated = calculateEncainedFinances(
         monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig,
-        activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+        activeHousehold?.billing_cycle_start_day || 10, savingsAllocations, savingsDeposits
       );
       const target = monthsData.find((m) => m.id === monthId);
       const closing = target
@@ -1165,6 +1171,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCategoryBudgets((cBudgets || []) as CategoryBudget[]);
       }
 
+      // 9. Ingresos a ahorros en otra moneda (opcional: requiere migración)
+      const { data: sDeps, error: sDepsError } = await supabase
+        .from('savings_deposits')
+        .select('*')
+        .eq('household_id', activeHousehold.id)
+        .order('date', { ascending: false });
+
+      if (sDepsError) {
+        if (isMissingSchemaError(sDepsError)) {
+          setSavingsDepositsReady(false);
+          setSavingsDeposits([]);
+        }
+      } else {
+        setSavingsDepositsReady(true);
+        setSavingsDeposits((sDeps || []) as SavingsDeposit[]);
+      }
+
     } catch (e) {
       console.error('Error loading financial data', e);
       showToast('Error al cargar datos financieros', 'error');
@@ -1287,12 +1310,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
+    if (savingsDepositsReady) {
+      channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'savings_deposits', filter: `household_id=eq.${activeHousehold.id}` },
+        () => loadFinancialData()
+      );
+    }
+
     channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeHousehold, activeMonthRecord, savingsAccountsReady, categoryBudgetsReady]);
+  }, [activeHousehold, activeMonthRecord, savingsAccountsReady, categoryBudgetsReady, savingsDepositsReady]);
 
   const getOrCreateMonthIdForDate = async (dateStr: string): Promise<string> => {
     if (!activeHousehold) throw new Error("No active household");
@@ -2321,11 +2352,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const [
       incomes, expenses, installments, unplannedExpenses, savingsConfigRows, savingsAccountsRows,
-      savingsAllocationsRows, savingsAccountExpensesRows, categoryBudgetsRows, expenseCategories
+      savingsAllocationsRows, savingsAccountExpensesRows, categoryBudgetsRows, expenseCategories, savingsDepositsRows
     ] = await Promise.all([
       byMonth('incomes'), byMonth('expenses'), byHousehold('installments'), byHousehold('unplanned_expenses'),
       byHousehold('savings_config'), byHousehold('savings_accounts'), byHousehold('savings_allocations'),
-      byHousehold('savings_account_expenses'), byHousehold('category_budgets'), byHousehold('expense_categories')
+      byHousehold('savings_account_expenses'), byHousehold('category_budgets'), byHousehold('expense_categories'),
+      byHousehold('savings_deposits')
     ]);
 
     return {
@@ -2341,7 +2373,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       savings_allocations: savingsAllocationsRows,
       savings_account_expenses: savingsAccountExpensesRows,
       category_budgets: categoryBudgetsRows,
-      expense_categories: expenseCategories
+      expense_categories: expenseCategories,
+      savings_deposits: savingsDepositsRows
     };
   };
 
@@ -2389,6 +2422,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (wants('savings')) {
         await run(supabase.from('savings_account_expenses').delete().eq('household_id', householdId));
         await run(supabase.from('savings_allocations').delete().eq('household_id', householdId));
+        if (savingsDepositsReady) {
+          await run(supabase.from('savings_deposits').delete().eq('household_id', householdId));
+        }
 
         const now = new Date().toISOString();
         const { error: configError } = await supabase
@@ -2506,6 +2542,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await loadFinancialData();
     } catch (e) {
       savingsAccountsError(e, 'Error al guardar la asignación');
+      throw e;
+    }
+  };
+
+  // -------------------------------------------------------------------
+  // INGRESOS A AHORROS EN OTRA MONEDA
+  // -------------------------------------------------------------------
+  const addSavingsDeposit: AppContextType['addSavingsDeposit'] = async (d) => {
+    if (!activeHousehold || !user) return;
+    try {
+      const amount = Math.round(d.original_amount * d.exchange_rate * 100) / 100;
+      const { year, month } = getFinancialPeriod(d.date, activeHousehold.billing_cycle_start_day || 10);
+      const { error } = await supabase.from('savings_deposits').insert({
+        household_id: activeHousehold.id,
+        date: d.date,
+        year,
+        month,
+        description: d.description.trim(),
+        original_amount: d.original_amount,
+        original_currency: d.original_currency,
+        exchange_rate: d.exchange_rate,
+        amount,
+        created_by: user.id
+      });
+      if (error) throw error;
+      showToast('Ingreso agregado al fondo de ahorros', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in addSavingsDeposit:', e);
+      showToast(isMissingSchemaError(e)
+        ? 'Falta ejecutar migration_savings_deposits.sql en Supabase.'
+        : 'No se pudo agregar el ingreso', 'error');
+      throw e;
+    }
+  };
+
+  const deleteSavingsDeposit = async (id: string) => {
+    try {
+      const { error } = await supabase.from('savings_deposits').delete().eq('id', id);
+      if (error) throw error;
+      showToast('Ingreso eliminado', 'success');
+      await loadFinancialData();
+    } catch (e) {
+      console.error('Error in deleteSavingsDeposit:', e);
+      showToast('No se pudo eliminar el ingreso', 'error');
       throw e;
     }
   };
@@ -2685,6 +2766,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteSavingsAccount,
         setSavingsAllocation,
         setCategoryBudget,
+        addSavingsDeposit,
+        deleteSavingsDeposit,
+        savingsDeposits,
+        savingsDepositsReady,
         deleteSavingsAllocation,
         addSavingsAccountExpense,
         updateSavingsAccountExpense,

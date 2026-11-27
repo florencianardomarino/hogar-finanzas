@@ -13,7 +13,7 @@ import {
 
 export const ExpensesScreen: React.FC = () => {
   const {
-    monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations,
+    monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations, savingsDeposits,
     deleteExpense, updateExpense, addExpense, activeMonthRecord, selectedPeriod, categories, showToast,
     activeHousehold, categoryBudgets
   } = useApp();
@@ -123,7 +123,7 @@ export const ExpensesScreen: React.FC = () => {
   // CÁLCULO DE DATOS FINANCIEROS INYECTADOS
   // -------------------------------------------------------------------
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations, savingsDeposits
   );
 
   const currentPeriodData = calculatedMonths.find(

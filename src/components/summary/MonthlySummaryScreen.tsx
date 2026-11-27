@@ -6,12 +6,12 @@ import { PieChart, TrendingUp, TrendingDown, Users, Landmark, CreditCard, Sparkl
 
 export const MonthlySummaryScreen: React.FC = () => {
   const { 
-    monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations, selectedPeriod, categories, activeHousehold
+    monthsData, incomes, allIncomes, expenses, allExpenses, allUnplannedExpenses, installments, savingsConfig, savingsAllocations, savingsDeposits, selectedPeriod, categories, activeHousehold
   } = useApp();
 
   // Calcular finanzas encadenadas
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations, savingsDeposits
   );
 
   // Período seleccionado actual

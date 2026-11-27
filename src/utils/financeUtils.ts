@@ -1,4 +1,4 @@
-import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation } from '../types';
+import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation, SavingsDeposit } from '../types';
 import { getFinancialPeriod } from './dateUtils';
 import { isSameSeries, getDayOfMonth } from './recurrence';
 
@@ -33,6 +33,7 @@ export interface CalculatedMonthData {
 
   // Restablecimiento manual del saldo (ancla): solo en el mes ancla
   isBalanceAnchor: boolean;
+  totalDeposits: number; // ingresos puntuales al fondo de ahorros
   anchorAdjustment: number; // saldo manual - saldo que calculaba la app
 }
 
@@ -62,7 +63,8 @@ export function calculateEncainedFinances(
   installments: Installment[],
   savingsConfig: SavingsConfig | null,
   billingCycleStartDay: number = 10,
-  savingsAllocations: SavingsAllocation[] = []
+  savingsAllocations: SavingsAllocation[] = [],
+  savingsDeposits: Pick<SavingsDeposit, 'year' | 'month' | 'amount'>[] = []
 ): CalculatedMonthData[] {
   
   // 1. Saldo inicial base
@@ -374,9 +376,14 @@ export function calculateEncainedFinances(
         totalAllocated += amount;
       });
 
+    // Ingresos puntuales al fondo (ej. dólares convertidos a euros)
+    const totalDeposits = savingsDeposits
+      .filter((d) => d.year === m.year && d.month === m.month)
+      .reduce((acc, d) => acc + Number(d.amount), 0);
+
     // Ahorro acumulado encadenado
     const previousBalance = currentAccumulatedBalance;
-    let finalBalance = previousBalance + saving - totalUnplanned - totalAllocated;
+    let finalBalance = previousBalance + saving + totalDeposits - totalUnplanned - totalAllocated;
 
     // Un mes cerrado con saldo guardado queda congelado: los meses siguientes se encadenan desde
     // ese saldo aunque se hayan hecho ajustes posteriores al cierre.
@@ -419,6 +426,7 @@ export function calculateEncainedFinances(
       previousBalance,
       finalBalance,
       totalAllocated,
+      totalDeposits,
       allocationsByAccount,
       isFrozen,
       closingDrift,

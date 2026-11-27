@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { ResetBalancePanel } from './ResetBalancePanel';
 import { SavingsAccountsSection } from './SavingsAccountsSection';
+import { SavingsDepositsSection } from './SavingsDepositsSection';
 
 interface SavingsScreenProps {
   onNavigate?: (tab: 'dashboard' | 'incomes' | 'expenses' | 'installments' | 'savings' | 'summary' | 'settings') => void;
@@ -31,7 +32,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
     addUnplannedExpense,
     deleteUnplannedExpense,
     updateUnplannedExpense,
-    savingsAllocations,
+    savingsAllocations, savingsDeposits,
     clearSavingsAnchor,
     showToast
   } = useApp();
@@ -54,7 +55,7 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
 
   // Calcular la cascada financiera
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations, savingsDeposits
   );
 
   // Ajuste manual vigente (saldo restablecido a un mes cerrado)
@@ -368,6 +369,8 @@ export const SavingsScreen: React.FC<SavingsScreenProps> = () => {
           </p>
         )}
       </div>
+
+      <SavingsDepositsSection />
 
       {/* 2. TABLA ENCADENADA MES A MES (DOS COLUMNAS EN DESKTOP) */}
       <div className="flex flex-col gap-6">

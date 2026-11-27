@@ -22,7 +22,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const {
     activeHousehold, userRole, currentPeriod, selectedPeriod, setSelectedPeriod,
     monthsData, activeMonthRecord, incomes, allIncomes, expenses, allExpenses, unplannedExpenses, allUnplannedExpenses, installments,
-    savingsConfig, savingsAllocations, addIncome, addExpense, addInstallment, addUnplannedExpense,
+    savingsConfig, savingsAllocations, savingsDeposits, addIncome, addExpense, addInstallment, addUnplannedExpense,
     categories, categoryBudgets, closeMonth, reopenMonth, showToast
   } = useApp();
 
@@ -100,7 +100,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   // CÁLCULO DE DATOS FINANCIEROS ENCADENADOS
   // -------------------------------------------------------------------
   const calculatedMonths = calculateEncainedFinances(
-    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations
+    monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, activeHousehold?.billing_cycle_start_day || 10, savingsAllocations, savingsDeposits
   );
 
   // Obtener los datos del período seleccionado actual

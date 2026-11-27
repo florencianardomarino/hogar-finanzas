@@ -26,7 +26,7 @@ const month = (o: Partial<CalculatedMonthData> = {}): CalculatedMonthData => {
     totalIncomes: incomesList.reduce((a, i) => a + i.amount, 0),
     totalExpenses: expensesList.reduce((a, e) => a + e.amount, 0),
     totalUnplanned: 0, incomesList, expensesList, unplannedList: [], saving: 0,
-    previousBalance: 0, finalBalance: 0, totalAllocated: 0, allocationsByAccount: {},
+    previousBalance: 0, finalBalance: 0, totalAllocated: 0, totalDeposits: 0, allocationsByAccount: {},
     isFrozen: false, closingDrift: 0, isBalanceAnchor: false, anchorAdjustment: 0,
     ...o,
   };
