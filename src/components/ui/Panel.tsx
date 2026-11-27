@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface PanelProps {
@@ -27,7 +28,9 @@ export const Panel: React.FC<PanelProps> = ({ isOpen, onClose, title, children }
 
   if (!shouldRender) return null;
 
-  return (
+  // Se renderiza en <body>: si el panel se declara dentro de una tarjeta con backdrop-filter
+  // (.glass-panel), un elemento fixed quedaría confinado a esa tarjeta en vez de cubrir la pantalla.
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex md:justify-end items-end md:items-stretch">
       {/* Fondo desenfocado */}
       <div 
@@ -66,6 +69,7 @@ export const Panel: React.FC<PanelProps> = ({ isOpen, onClose, title, children }
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
