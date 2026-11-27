@@ -9,6 +9,7 @@ import {
   Wallet, Plus, Edit3, Trash2, ChevronDown, Calendar, Percent, Euro, Database, ArrowDownToLine, Receipt, Info, CreditCard
 } from 'lucide-react';
 import { CancelDebtModal } from './CancelDebtModal';
+import { Spinner } from '../ui/Spinner';
 
 const ACCOUNT_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4', '#EC4899'];
 
@@ -59,11 +60,13 @@ export const SavingsAccountsSection: React.FC = () => {
     const currentMonthCalc = calculatedMonths.find(
       (m) => m.year === currentPeriod.year && m.month === currentPeriod.month
     );
+    const initial = Number(savingsAccounts.find((a) => a.id === accountId)?.initial_balance || 0);
     return {
+      initial,
       allocatedToDate,
       scheduled,
       spent,
-      available: allocatedToDate - spent,
+      available: initial + allocatedToDate - spent,
       allocatedThisMonth: currentMonthCalc?.allocationsByAccount[accountId] || 0
     };
   };
@@ -76,9 +79,12 @@ export const SavingsAccountsSection: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Cuenta (crear / editar)
+  // Mientras se guarda, el botón queda bloqueado (evita altas duplicadas por doble clic)
+  const [submitting, setSubmitting] = useState(false);
   const [accountPanelOpen, setAccountPanelOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<SavingsAccount | null>(null);
   const [accName, setAccName] = useState('');
+  const [accInitial, setAccInitial] = useState('');
   const [accColor, setAccColor] = useState(ACCOUNT_COLORS[0]);
 
   // Asignación mensual
@@ -112,6 +118,7 @@ export const SavingsAccountsSection: React.FC = () => {
   const openCreateAccount = () => {
     setEditingAccount(null);
     setAccName('');
+    setAccInitial('');
     setAccColor(ACCOUNT_COLORS[savingsAccounts.length % ACCOUNT_COLORS.length]);
     setAccountPanelOpen(true);
   };
@@ -119,22 +126,32 @@ export const SavingsAccountsSection: React.FC = () => {
   const openEditAccount = (acc: SavingsAccount) => {
     setEditingAccount(acc);
     setAccName(acc.name);
+    setAccInitial(Number(acc.initial_balance || 0) > 0 ? String(acc.initial_balance) : '');
     setAccColor(acc.color);
     setAccountPanelOpen(true);
   };
 
   const handleAccountSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!accName.trim()) return;
+    const initial = accInitial.trim() === '' ? 0 : parseFloat(accInitial.replace(',', '.'));
+    if (!accName.trim() || submitting || isNaN(initial) || initial < 0) return;
+    setSubmitting(true);
     try {
       if (editingAccount) {
-        await updateSavingsAccount(editingAccount.id, { name: accName.trim(), color: accColor });
+        await updateSavingsAccount(editingAccount.id, {
+          name: accName.trim(),
+          color: accColor,
+          // Solo si cambió: renombrar una cuenta no depende de la migración del saldo inicial
+          ...(initial !== Number(editingAccount.initial_balance || 0) ? { initial_balance: initial } : {})
+        });
       } else {
-        await addSavingsAccount(accName, accColor);
+        await addSavingsAccount(accName, accColor, initial);
       }
       setAccountPanelOpen(false);
     } catch {
       // El contexto ya muestra el aviso de error
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -199,12 +216,15 @@ export const SavingsAccountsSection: React.FC = () => {
 
   const handleAllocSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!allocAccountId || !allocValid) return;
+    if (!allocAccountId || !allocValid || submitting) return;
+    setSubmitting(true);
     try {
       await setSavingsAllocation(allocAccountId, allocPeriod.year, allocPeriod.month, allocKind, allocParsed);
       setAllocPanelOpen(false);
     } catch {
       // El contexto ya muestra el aviso de error
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -239,7 +259,8 @@ export const SavingsAccountsSection: React.FC = () => {
 
   const handleExpenseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!expAccountId || !expDesc.trim() || isNaN(expParsed) || expParsed <= 0) return;
+    if (!expAccountId || !expDesc.trim() || isNaN(expParsed) || expParsed <= 0 || submitting) return;
+    setSubmitting(true);
     try {
       if (editingExpense) {
         await updateSavingsAccountExpense(editingExpense.id, {
@@ -260,6 +281,8 @@ export const SavingsAccountsSection: React.FC = () => {
       setExpPanelOpen(false);
     } catch {
       // El contexto ya muestra el aviso de error
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -405,6 +428,9 @@ export const SavingsAccountsSection: React.FC = () => {
                       </span>
                     </div>
                     <div className="flex flex-col items-end text-[10px] text-lux-muted font-semibold gap-0.5">
+                      {stats.initial > 0 && (
+                        <span>Saldo inicial: <strong className="text-lux-text">{fmt(stats.initial)}</strong></span>
+                      )}
                       <span>Asignado total: <strong className="text-brand-emerald">{fmt(stats.allocatedToDate)}</strong></span>
                       <span>Gastado: <strong className="text-brand-rose">{fmt(stats.spent)}</strong></span>
                       <span>Este mes: <strong className="text-lux-text">{fmt(stats.allocatedThisMonth)}</strong></span>
@@ -559,6 +585,21 @@ export const SavingsAccountsSection: React.FC = () => {
             />
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <label className={labelClass}>Saldo inicial (€, opcional)</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="0,00"
+              value={accInitial}
+              onChange={(e) => setAccInitial(e.target.value)}
+              className={inputClass}
+            />
+            <p className="text-[10px] text-lux-muted">
+              Dinero que la cuenta ya tenía. Se suma a su disponible y no sale del fondo principal de ningún mes.
+            </p>
+          </div>
+
           <div className="flex flex-col gap-2">
             <label className={labelClass}>Color</label>
             <div className="flex flex-wrap gap-2.5">
@@ -579,8 +620,10 @@ export const SavingsAccountsSection: React.FC = () => {
 
           <button
             type="submit"
-            className="w-full bg-gradient-to-r from-brand-indigo to-brand-purple text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer"
+            disabled={submitting}
+            className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-brand-indigo to-brand-purple text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
+            {submitting && <Spinner size={14} />}
             {editingAccount ? 'Guardar cambios' : 'Crear cuenta'}
           </button>
         </form>
@@ -655,9 +698,10 @@ export const SavingsAccountsSection: React.FC = () => {
 
           <button
             type="submit"
-            disabled={!allocValid}
-            className="w-full bg-gradient-to-r from-brand-emerald to-emerald-600 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!allocValid || submitting}
+            className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-brand-emerald to-emerald-600 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
+            {submitting && <Spinner size={14} />}
             Guardar asignación
           </button>
         </form>
@@ -747,8 +791,10 @@ export const SavingsAccountsSection: React.FC = () => {
 
           <button
             type="submit"
-            className="w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer"
+            disabled={submitting}
+            className="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-brand-rose to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs font-bold py-3.5 rounded-2xl shadow-lg transition-transform active:scale-[0.98] mt-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
+            {submitting && <Spinner size={14} />}
             {editingExpense ? 'Guardar cambios' : 'Registrar gasto'}
           </button>
         </form>

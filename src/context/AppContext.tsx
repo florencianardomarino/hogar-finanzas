@@ -115,8 +115,8 @@ interface AppContextType {
   resetHouseholdData: (scopes: HouseholdResetScope[]) => Promise<void>;
 
   // Cuentas de ahorro (ej: Inversión, Cancelar deudas)
-  addSavingsAccount: (name: string, color: string) => Promise<void>;
-  updateSavingsAccount: (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => Promise<void>;
+  addSavingsAccount: (name: string, color: string, initialBalance?: number) => Promise<void>;
+  updateSavingsAccount: (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color' | 'initial_balance'>>) => Promise<void>;
   deleteSavingsAccount: (id: string) => Promise<void>;
   setSavingsAllocation: (accountId: string, year: number, month: number, kind: AllocationKind, value: number) => Promise<void>;
   // amount null = quitar el ajuste del mes y volver al presupuesto base de la categoría
@@ -191,6 +191,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [categoryBudgetsReady, setCategoryBudgetsReady] = useState(true);
   const [savingsDeposits, setSavingsDeposits] = useState<SavingsDeposit[]>([]);
   const [savingsDepositsReady, setSavingsDepositsReady] = useState(true);
+  const inFlightCreates = useRef(new Set<string>());
   const [loadingData, setLoadingData] = useState(false);
 
   // Toasts & Tema
@@ -2470,7 +2471,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast(isMissingSchemaError(e) ? SAVINGS_MIGRATION_MESSAGE : fallback, 'error');
   };
 
-  const addSavingsAccount = async (name: string, color: string) => {
+  const addSavingsAccount = async (name: string, color: string, initialBalance: number = 0) => {
     if (!activeHousehold || !user) return;
     try {
       const { error } = await supabase
@@ -2480,6 +2481,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           name: name.trim(),
           color,
           sort_order: savingsAccounts.length,
+          // Solo se envía si hay saldo: así crear cuentas sigue funcionando sin la migración
+          ...(initialBalance > 0 ? { initial_balance: initialBalance } : {}),
           created_by: user.id
         });
       if (error) throw error;
@@ -2491,7 +2494,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const updateSavingsAccount = async (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color'>>) => {
+  const updateSavingsAccount = async (id: string, patch: Partial<Pick<SavingsAccount, 'name' | 'color' | 'initial_balance'>>) => {
     try {
       const { error } = await supabase
         .from('savings_accounts')
@@ -2703,6 +2706,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Evita altas duplicadas por doble clic: mientras una alta está en curso, otra llamada igual se ignora.
+  // Se usa un ref (no estado) para que el bloqueo valga dentro del mismo render.
+  const guardCreate = <A extends unknown[]>(key: string, fn: (...args: A) => Promise<void>) =>
+    async (...args: A): Promise<void> => {
+      if (inFlightCreates.current.has(key)) return;
+      inFlightCreates.current.add(key);
+      try {
+        await fn(...args);
+      } finally {
+        inFlightCreates.current.delete(key);
+      }
+    };
+
   return (
     <AppContext.Provider
       value={{
@@ -2752,16 +2768,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         categoryBudgetsReady,
         loadingData,
         
-        addIncome,
+        addIncome: guardCreate('addIncome', addIncome),
         updateIncome,
         deleteIncome,
-        addExpense,
+        addExpense: guardCreate('addExpense', addExpense),
         updateExpense,
         deleteExpense,
-        addInstallment,
+        addInstallment: guardCreate('addInstallment', addInstallment),
         cancelInstallment,
         updateInstallment,
-        addUnplannedExpense,
+        addUnplannedExpense: guardCreate('addUnplannedExpense', addUnplannedExpense),
         updateUnplannedExpense,
         deleteUnplannedExpense,
         updateSavingsConfig,
@@ -2769,18 +2785,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         clearSavingsAnchor,
         exportHouseholdData,
         resetHouseholdData,
-        addSavingsAccount,
+        addSavingsAccount: guardCreate('addSavingsAccount', addSavingsAccount),
         updateSavingsAccount,
         deleteSavingsAccount,
         setSavingsAllocation,
         setCategoryBudget,
         getMonthBudgets,
-        addSavingsDeposit,
+        addSavingsDeposit: guardCreate('addSavingsDeposit', addSavingsDeposit),
         deleteSavingsDeposit,
         savingsDeposits,
         savingsDepositsReady,
         deleteSavingsAllocation,
-        addSavingsAccountExpense,
+        addSavingsAccountExpense: guardCreate('addSavingsAccountExpense', addSavingsAccountExpense),
         updateSavingsAccountExpense,
         deleteSavingsAccountExpense,
         
