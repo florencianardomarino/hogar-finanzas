@@ -1,5 +1,5 @@
-import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation } from '../types';
-import { getFinancialPeriod } from './dateUtils';
+import { Income, Expense, Installment, UnplannedExpense, Month, SavingsConfig, SavingsAllocation, SavingsDeposit } from '../types';
+import { getFinancialPeriod, getPeriodRange } from './dateUtils';
 import { isSameSeries, getDayOfMonth } from './recurrence';
 
 export interface CalculatedMonthData {
@@ -33,6 +33,8 @@ export interface CalculatedMonthData {
 
   // Restablecimiento manual del saldo (ancla): solo en el mes ancla
   isBalanceAnchor: boolean;
+  budgetReserve: number; // lo que falta gastar de los presupuestos por categoría (reservado del ahorro)
+  totalDeposits: number; // ingresos puntuales al fondo de ahorros
   anchorAdjustment: number; // saldo manual - saldo que calculaba la app
 }
 
@@ -62,7 +64,10 @@ export function calculateEncainedFinances(
   installments: Installment[],
   savingsConfig: SavingsConfig | null,
   billingCycleStartDay: number = 10,
-  savingsAllocations: SavingsAllocation[] = []
+  savingsAllocations: SavingsAllocation[] = [],
+  savingsDeposits: Pick<SavingsDeposit, 'year' | 'month' | 'amount'>[] = [],
+  /** Presupuesto por categoría de cada mes. Lo no gastado de ese presupuesto se reserva en meses abiertos que aún no terminaron. */
+  getMonthBudgets?: (year: number, month: number) => Record<string, number>
 ): CalculatedMonthData[] {
   
   // 1. Saldo inicial base
@@ -374,9 +379,21 @@ export function calculateEncainedFinances(
         totalAllocated += amount;
       });
 
+    // Ingresos puntuales al fondo (ej. dólares convertidos a euros)
+    const totalDeposits = savingsDeposits
+      .filter((d) => d.year === m.year && d.month === m.month)
+      .reduce((acc, d) => acc + Number(d.amount), 0);
+
+    // Reserva de presupuestos: lo que todavía no se gastó de cada categoría con presupuesto se
+    // descuenta del ahorro mientras el mes está abierto y su período no terminó.
+    let budgetReserve = 0;
+    if (getMonthBudgets && m.status !== 'closed' && getPeriodRange(m.year, m.month, billingCycleStartDay).end >= today) {
+      budgetReserve = calculateBudgetReserve(consolidatedExpensesList, getMonthBudgets(m.year, m.month));
+    }
+
     // Ahorro acumulado encadenado
     const previousBalance = currentAccumulatedBalance;
-    let finalBalance = previousBalance + saving - totalUnplanned - totalAllocated;
+    let finalBalance = previousBalance + saving + totalDeposits - totalUnplanned - totalAllocated - budgetReserve;
 
     // Un mes cerrado con saldo guardado queda congelado: los meses siguientes se encadenan desde
     // ese saldo aunque se hayan hecho ajustes posteriores al cierre.
@@ -419,6 +436,8 @@ export function calculateEncainedFinances(
       previousBalance,
       finalBalance,
       totalAllocated,
+      totalDeposits,
+      budgetReserve,
       allocationsByAccount,
       isFrozen,
       closingDrift,
@@ -428,4 +447,20 @@ export function calculateEncainedFinances(
   });
 
   return results;
+}
+
+/** Suma, por categoría con presupuesto, lo que falta gastar: max(presupuesto - gastado, 0). */
+export function calculateBudgetReserve(
+  expenses: Pick<Expense, 'category_id' | 'amount'>[],
+  budgets: Record<string, number>
+): number {
+  const committed: Record<string, number> = {};
+  expenses.forEach((e) => {
+    committed[e.category_id] = (committed[e.category_id] || 0) + Number(e.amount);
+  });
+  const total = Object.entries(budgets).reduce(
+    (acc, [categoryId, budget]) => acc + Math.max(Number(budget) - (committed[categoryId] || 0), 0),
+    0
+  );
+  return Math.round(total * 100) / 100;
 }

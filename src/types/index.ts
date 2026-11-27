@@ -171,6 +171,23 @@ export interface SavingsAllocation {
   created_at: string;
 }
 
+export interface SavingsDeposit {
+  id: string;
+  household_id: string;
+  date: string;
+  year: number;
+  month: number;
+  description: string;
+  original_amount: number;
+  original_currency: string;
+  /** Euros por cada unidad de la moneda original */
+  exchange_rate: number;
+  /** Importe en euros: lo que entra al fondo */
+  amount: number;
+  created_by: string | null;
+  created_at: string;
+}
+
 export interface SavingsAccountExpense {
   id: string;
   household_id: string;
