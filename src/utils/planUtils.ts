@@ -115,7 +115,7 @@ export function calculateMonthPlan(
     budgets: budgetLines,
     balanceToday: round2(month.previousBalance + receivedIncomes - real - month.totalUnplanned),
     projectedBalance: round2(
-      month.previousBalance + month.totalIncomes - planned - month.totalUnplanned - month.totalAllocated
+      month.previousBalance + month.totalIncomes + month.totalDeposits - planned - month.totalUnplanned - month.totalAllocated
     ),
   };
 }

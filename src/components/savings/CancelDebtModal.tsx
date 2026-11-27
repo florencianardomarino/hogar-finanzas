@@ -65,7 +65,7 @@ const CancelDebtForm: React.FC<{
   const {
     savingsAccounts,
     savingsAccountExpenses,
-    savingsAllocations, savingsDeposits,
+    savingsAllocations, savingsDeposits, getMonthBudgets,
     installments,
     allExpenses,
     monthsData,
@@ -99,9 +99,9 @@ const CancelDebtForm: React.FC<{
         installments,
         savingsConfig,
         billingDay,
-        savingsAllocations, savingsDeposits
+        savingsAllocations, savingsDeposits, getMonthBudgets
       ),
-    [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations, savingsDeposits]
+    [monthsData, allIncomes, allExpenses, allUnplannedExpenses, installments, savingsConfig, billingDay, savingsAllocations, savingsDeposits, getMonthBudgets]
   );
 
   const isUpToCurrent = (year: number, month: number) =>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
 import { 
@@ -6,6 +6,7 @@ import {
   Income, Expense, Installment, UnplannedExpense, SavingsConfig,
   SavingsAccount, SavingsAllocation, SavingsAccountExpense, AllocationKind, CategoryBudget, HouseholdResetScope, SavingsDeposit
 } from '../types';
+import { resolveMonthBudgets } from '../utils/planUtils';
 import { getFinancialPeriod, arePeriodsEqual, FinancialPeriod } from '../utils/dateUtils';
 import { calculateEncainedFinances } from '../utils/financeUtils';
 import { isSameSeries, getDayOfMonth } from '../utils/recurrence';
@@ -84,6 +85,7 @@ interface AppContextType {
   categoryBudgets: CategoryBudget[]; // ajustes puntuales del presupuesto de una categoría en un mes
   savingsDeposits: SavingsDeposit[];
   savingsDepositsReady: boolean; // false si falta ejecutar migration_savings_deposits.sql
+  getMonthBudgets: (year: number, month: number) => Record<string, number>;
   categoryBudgetsReady: boolean; // false si falta ejecutar migration_category_budgets.sql
   loadingData: boolean;
   
@@ -2546,6 +2548,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Presupuesto de cada categoría para un mes (ajuste puntual o base). Estable entre renders.
+  const getMonthBudgets = useCallback(
+    (year: number, month: number) => resolveMonthBudgets(categories, categoryBudgets, year, month),
+    [categories, categoryBudgets]
+  );
+
   // -------------------------------------------------------------------
   // INGRESOS A AHORROS EN OTRA MONEDA
   // -------------------------------------------------------------------
@@ -2766,6 +2774,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteSavingsAccount,
         setSavingsAllocation,
         setCategoryBudget,
+        getMonthBudgets,
         addSavingsDeposit,
         deleteSavingsDeposit,
         savingsDeposits,

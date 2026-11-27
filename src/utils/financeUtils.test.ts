@@ -48,11 +48,13 @@ const run = (args: {
   months?: Month[]; incomes?: Income[]; expenses?: Expense[]; unplanned?: UnplannedExpense[];
   installments?: Installment[]; config?: SavingsConfig | null; allocations?: SavingsAllocation[];
   deposits?: { year: number; month: number; amount: number }[];
+  budgets?: Record<string, number>;
 }) =>
   calculateEncainedFinances(
     args.months ?? [], args.incomes ?? [], args.expenses ?? [], args.unplanned ?? [],
     args.installments ?? [], args.config === undefined ? config() : args.config,
-    START_DAY, args.allocations ?? [], args.deposits ?? []
+    START_DAY, args.allocations ?? [], args.deposits ?? [],
+    args.budgets ? () => args.budgets! : undefined
   );
 
 const find = (res: ReturnType<typeof run>, y: number, m: number) => {
@@ -629,5 +631,53 @@ describe('ingresos al fondo en otra moneda (savings deposits)', () => {
       deposits: [{ year: 2026, month: 5, amount: 460 }]
     });
     expect(find(res, 2026, 6).totalDeposits).toBe(0);
+  });
+});
+
+describe('reserva de presupuestos por categoría', () => {
+  const budgets = { super: 300, nafta: 100 };
+  const sueldo = (y: number, m: number) => income({ amount: 1000, date: `${y}-${String(m).padStart(2, '0')}-10`, month_id: monthId(y, m) });
+
+  it('un mes futuro descuenta el presupuesto completo del ahorro y se arrastra', () => {
+    const res = run({ months: [month(2026, 6), month(2026, 7)], incomes: [sueldo(2026, 7)], budgets });
+    const jul = find(res, 2026, 7);
+    expect(jul.budgetReserve).toBe(400);
+    // junio (mes actual, sin ingresos) también reserva 400: -400, y julio parte de ahí
+    expect(find(res, 2026, 6).finalBalance).toBe(-400);
+    expect(jul.finalBalance).toBe(-400 + 1000 - 400);
+  });
+
+  it('solo se reserva lo que falta gastar de cada categoría', () => {
+    const res = run({
+      months: [month(2026, 7)],
+      incomes: [sueldo(2026, 7)],
+      expenses: [expense({ amount: 120, date: '2026-07-12', month_id: monthId(2026, 7), category_id: 'super' })],
+      budgets
+    });
+    expect(find(res, 2026, 7).budgetReserve).toBe(180 + 100);
+  });
+
+  it('si se pasó del presupuesto no reserva nada para esa categoría', () => {
+    const res = run({
+      months: [month(2026, 7)],
+      expenses: [expense({ amount: 350, date: '2026-07-12', month_id: monthId(2026, 7), category_id: 'super' })],
+      budgets
+    });
+    expect(find(res, 2026, 7).budgetReserve).toBe(100);
+  });
+
+  it('un mes cuyo período ya terminó no reserva nada', () => {
+    const res = run({ months: [month(2026, 4), month(2026, 6)], incomes: [sueldo(2026, 4)], budgets });
+    expect(find(res, 2026, 4).budgetReserve).toBe(0);
+  });
+
+  it('un mes cerrado no reserva nada', () => {
+    const res = run({ months: [month(2026, 7, 'closed')], budgets });
+    expect(find(res, 2026, 7).budgetReserve).toBe(0);
+  });
+
+  it('sin presupuestos el saldo no cambia', () => {
+    const res = run({ months: [month(2026, 7)], incomes: [sueldo(2026, 7)] });
+    expect(find(res, 2026, 7).budgetReserve).toBe(0);
   });
 });
